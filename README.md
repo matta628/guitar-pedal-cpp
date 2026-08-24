@@ -1,8 +1,8 @@
 # guitar-pedal-cpp
 
 A real-time software guitar pedal running on a Raspberry Pi 5: guitar in → C++ audio DSP chain
-(distortion, chorus, delay, reverb) → audio out, played live while actually practicing guitar.
-Aimed at a shoegaze-leaning sound (Cocteau Twins, My Bloody Valentine).
+(distortion, chorus, delay, reverb, looper) → audio out, played live while actually practicing
+guitar. Aimed at a shoegaze-leaning sound (Cocteau Twins, My Bloody Valentine).
 
 No pre-recorded processing — the point is playing live through the chain, with the same
 fixed-deadline-per-buffer discipline (no allocation, no locks, no syscalls in the hot path) that
@@ -25,6 +25,8 @@ introduced, not just DSP-domain code.
   decays.
 - **Reverb** — simulates a room/space via hundreds of tiny decaying echoes (e.g. a
   Schroeder/Freeverb-style feedback delay network) — the "cathedral wash" in both bands' sound.
+- **Looper** — records a phrase into a buffer, then plays it back on repeat while you play over it;
+  a differentiator from the Mustang Micro, which has no looper logic at all.
 - **Why latency matters** — the core constraint is finishing each audio buffer's processing before
   the next one arrives, typically a few milliseconds of budget. That's why allocation, locks, and
   syscalls in the audio callback matter so much — any of them can blow the deadline unpredictably
@@ -59,8 +61,11 @@ playing.
 - [ ] **3. Delay** — feedback-driven echo
 - [ ] **4. Chorus** — LFO-modulated short delay line
 - [ ] **5. Reverb** — algorithmic reverb (Schroeder/Freeverb-style feedback delay network)
-- [ ] **6. "Shoegaze mode"** — chain fuzz + chorus + reverb into one preset, play through it live
-- [ ] **7. Stretch: physical footswitches** — wire real footswitches to the Pi's GPIO
+- [ ] **6. Looper** — single mono track, fixed max buffer length, no overdub for v1: record → loop
+      playback → stop/clear on one control. Builds on the ring-buffer foundation from Delay.
+- [ ] **7. "Shoegaze mode"** — chain fuzz + chorus + reverb into one preset, play through it live
+- [ ] **8. Stretch: physical footswitches** — wire real footswitches to the Pi's GPIO
+- [ ] **9. Stretch: looper overdub** — layer additional passes onto an existing loop
 
 ## Dev environment
 

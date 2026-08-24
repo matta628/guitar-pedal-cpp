@@ -17,4 +17,8 @@ if(ENABLE_SANITIZERS)
   add_link_options(-fsanitize=address,undefined)
 endif()
 
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(RTAUDIO REQUIRED IMPORTED_TARGET rtaudio)
+
 add_executable(guitar_pedal src/main.cpp)
+target_link_libraries(guitar_pedal PRIVATE PkgConfig::RTAUDIO)

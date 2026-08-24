@@ -65,8 +65,9 @@ playing.
       playback → stop/clear on one control. Builds on the ring-buffer foundation from Delay. Not
       yet wired to a physical/keyboard trigger — that lands with Milestone 8.
 - [ ] **7. "Shoegaze mode"** — chain fuzz + chorus + reverb into one preset, play through it live
-- [ ] **8. Stretch: physical footswitches** — wire real footswitches to the Pi's GPIO
-- [ ] **9. Stretch: looper overdub** — layer additional passes onto an existing loop
+- [ ] **8. Stretch: physical footswitches** — wire real footswitches to the Pi's GPIO. Blocked on
+      hardware (no Pi/footswitches connected yet).
+- [x] **9. Stretch: looper overdub** — layer additional passes onto an existing loop
 
 ## Dev environment
 

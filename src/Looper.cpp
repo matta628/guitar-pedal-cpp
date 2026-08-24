@@ -1,12 +1,26 @@
 #include "Looper.h"
 
+#include <algorithm>
+
 Looper::Looper(float sample_rate, float max_loop_seconds)
     : buffer_(static_cast<std::size_t>(max_loop_seconds * sample_rate), 0.0f) {}
 
 void Looper::on_trigger() { trigger_pending_.store(true, std::memory_order_relaxed); }
 
+void Looper::clear() { clear_pending_.store(true, std::memory_order_relaxed); }
+
+void Looper::set_overdub_decay(float decay) {
+    overdub_decay_.store(std::clamp(decay, 0.0f, 1.0f), std::memory_order_relaxed);
+}
+
 void Looper::process(float* buffer, std::size_t n_frames) {
-    if (trigger_pending_.exchange(false, std::memory_order_relaxed)) {
+    if (clear_pending_.exchange(false, std::memory_order_relaxed)) {
+        write_index_ = 0;
+        read_index_ = 0;
+        loop_length_ = 0;
+        state_ = State::Empty;
+        trigger_pending_.store(false, std::memory_order_relaxed);
+    } else if (trigger_pending_.exchange(false, std::memory_order_relaxed)) {
         switch (state_) {
             case State::Empty:
                 write_index_ = 0;
@@ -18,13 +32,15 @@ void Looper::process(float* buffer, std::size_t n_frames) {
                 state_ = State::Playing;
                 break;
             case State::Playing:
-                write_index_ = 0;
-                read_index_ = 0;
-                loop_length_ = 0;
-                state_ = State::Empty;
+                state_ = State::Overdubbing;
+                break;
+            case State::Overdubbing:
+                state_ = State::Playing;
                 break;
         }
     }
+
+    const float decay = overdub_decay_.load(std::memory_order_relaxed);
 
     for (std::size_t i = 0; i < n_frames; ++i) {
         if (state_ == State::Recording) {
@@ -36,9 +52,13 @@ void Looper::process(float* buffer, std::size_t n_frames) {
                 read_index_ = 0;
                 state_ = State::Playing;
             }
-        }
-        if (state_ == State::Playing && loop_length_ > 0) {
+        } else if (state_ == State::Playing && loop_length_ > 0) {
             buffer[i] += buffer_[read_index_];
+            read_index_ = (read_index_ + 1) % loop_length_;
+        } else if (state_ == State::Overdubbing && loop_length_ > 0) {
+            const float existing = buffer_[read_index_];
+            buffer_[read_index_] = existing * decay + buffer[i];
+            buffer[i] += existing;
             read_index_ = (read_index_ + 1) % loop_length_;
         }
     }

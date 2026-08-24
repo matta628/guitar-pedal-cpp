@@ -149,11 +149,49 @@ void test_looper_record_and_play_back() {
     looper.process(live_over_loop.data(), live_over_loop.size());
     check(approx(live_over_loop[0], 11.0f), "Looper: live input mixes additively on top of the loop");
 
-    looper.on_trigger();
+    looper.clear();
     std::vector<float> after_clear = {5.0f, 6.0f};
     looper.process(after_clear.data(), after_clear.size());
-    check(looper.state() == Looper::State::Empty, "Looper: on_trigger from Playing clears back to Empty");
+    check(looper.state() == Looper::State::Empty, "Looper: clear() resets back to Empty from Playing");
     check(after_clear[0] == 5.0f && after_clear[1] == 6.0f, "Looper: Empty state is a no-op passthrough again");
+}
+
+void test_looper_overdub_layers_and_decays() {
+    Looper looper(48000.0f, 1.0f);
+
+    looper.on_trigger();
+    std::vector<float> recorded_input = {1.0f, 2.0f, 3.0f, 4.0f};
+    looper.process(recorded_input.data(), recorded_input.size());
+
+    looper.on_trigger();
+    std::vector<float> settle(4, 0.0f);
+    looper.process(settle.data(), settle.size());
+    check(looper.state() == Looper::State::Playing, "Looper overdub: enters Playing after recording");
+
+    looper.on_trigger();
+    std::vector<float> overdub_input = {10.0f, 0.0f, 0.0f, 0.0f};
+    looper.process(overdub_input.data(), overdub_input.size());
+    check(looper.state() == Looper::State::Overdubbing,
+          "Looper overdub: on_trigger from Playing enters Overdubbing");
+    check(approx(overdub_input[0], 11.0f) && approx(overdub_input[1], 2.0f) &&
+              approx(overdub_input[2], 3.0f) && approx(overdub_input[3], 4.0f),
+          "Looper overdub: output during overdub is new input plus existing loop content");
+
+    looper.on_trigger();
+    std::vector<float> playback(4, 0.0f);
+    looper.process(playback.data(), playback.size());
+    check(looper.state() == Looper::State::Playing,
+          "Looper overdub: on_trigger from Overdubbing returns to Playing");
+    check(approx(playback[0], 10.98f) && approx(playback[1], 1.96f) && approx(playback[2], 2.94f) &&
+              approx(playback[3], 3.92f),
+          "Looper overdub: overdubbed layer persists in the loop, decayed to bound gain buildup");
+
+    looper.clear();
+    std::vector<float> after_clear = {7.0f, 8.0f};
+    looper.process(after_clear.data(), after_clear.size());
+    check(looper.state() == Looper::State::Empty, "Looper overdub: clear() resets to Empty from any state");
+    check(after_clear[0] == 7.0f && after_clear[1] == 8.0f,
+          "Looper overdub: Empty is a no-op passthrough after clear()");
 }
 
 }  // namespace
@@ -167,6 +205,7 @@ int main() {
     test_reverb_silence_stays_silent();
     test_reverb_impulse_produces_bounded_decaying_tail();
     test_looper_record_and_play_back();
+    test_looper_overdub_layers_and_decays();
 
     if (g_failures > 0) {
         std::printf("\n%d test(s) failed\n", g_failures);

@@ -76,9 +76,15 @@ number rather than a sterile one.
 
 ## Build
 
+Dependencies: [RtAudio](https://github.com/thestk/rtaudio) (`brew install rtaudio` on macOS,
+`apt install librtaudio-dev` on the Pi).
+
 ```
 cmake -S . -B build
 cmake --build build
+./build/guitar_pedal
 ```
 
-(Build instructions will fill in as the project takes shape.)
+Add `-DENABLE_SANITIZERS=ON` to the configure step for an ASan+UBSan build.
+
+Ctrl+C stops the passthrough and prints the xrun count.

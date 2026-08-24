@@ -57,12 +57,13 @@ playing.
       (ASan/UBSan)
 - [ ] **1. Clean passthrough** — guitar → Pi → out, near-zero added latency; the foundational
       "no allocation/locks in the audio callback" milestone everything else builds on
-- [ ] **2. Distortion / fuzz** — waveshaping/clipping
-- [ ] **3. Delay** — feedback-driven echo
-- [ ] **4. Chorus** — LFO-modulated short delay line
-- [ ] **5. Reverb** — algorithmic reverb (Schroeder/Freeverb-style feedback delay network)
-- [ ] **6. Looper** — single mono track, fixed max buffer length, no overdub for v1: record → loop
-      playback → stop/clear on one control. Builds on the ring-buffer foundation from Delay.
+- [x] **2. Distortion / fuzz** — waveshaping/clipping
+- [x] **3. Delay** — feedback-driven echo
+- [x] **4. Chorus** — LFO-modulated short delay line
+- [x] **5. Reverb** — algorithmic reverb (Schroeder/Freeverb-style feedback delay network)
+- [x] **6. Looper** — single mono track, fixed max buffer length, no overdub for v1: record → loop
+      playback → stop/clear on one control. Builds on the ring-buffer foundation from Delay. Not
+      yet wired to a physical/keyboard trigger — that lands with Milestone 8.
 - [ ] **7. "Shoegaze mode"** — chain fuzz + chorus + reverb into one preset, play through it live
 - [ ] **8. Stretch: physical footswitches** — wire real footswitches to the Pi's GPIO
 - [ ] **9. Stretch: looper overdub** — layer additional passes onto an existing loop
@@ -86,5 +87,9 @@ cmake --build build
 ```
 
 Add `-DENABLE_SANITIZERS=ON` to the configure step for an ASan+UBSan build.
+
+Each DSP stage (`Distortion`, `Delay`, `Chorus`, `Reverb`, `Looper`) is a self-contained
+`process(float* buffer, size_t n_frames)` unit, offline-testable against synthetic signals without
+any audio hardware — `./build/offline_tests` (or `ctest` from the build dir) runs that suite.
 
 Ctrl+C stops the passthrough and prints the xrun count.

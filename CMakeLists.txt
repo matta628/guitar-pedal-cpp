@@ -20,5 +20,19 @@ endif()
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(RTAUDIO REQUIRED IMPORTED_TARGET rtaudio)
 
+add_library(pedal_dsp STATIC
+  src/Distortion.cpp
+  src/Delay.cpp
+  src/Chorus.cpp
+  src/Reverb.cpp
+  src/Looper.cpp
+)
+target_include_directories(pedal_dsp PUBLIC include)
+
 add_executable(guitar_pedal src/main.cpp)
-target_link_libraries(guitar_pedal PRIVATE PkgConfig::RTAUDIO)
+target_link_libraries(guitar_pedal PRIVATE pedal_dsp PkgConfig::RTAUDIO)
+
+enable_testing()
+add_executable(offline_tests tests/offline_tests.cpp)
+target_link_libraries(offline_tests PRIVATE pedal_dsp)
+add_test(NAME offline_tests COMMAND offline_tests)

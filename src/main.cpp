@@ -7,6 +7,10 @@
 #include <iostream>
 #include <thread>
 
+#include "Chorus.h"
+#include "Distortion.h"
+#include "Reverb.h"
+
 namespace {
 
 std::atomic<bool> g_stop{false};
@@ -14,12 +18,36 @@ std::atomic<int> g_xrun_count{0};
 
 void on_sigint(int) { g_stop.store(true, std::memory_order_relaxed); }
 
-int passthrough_callback(void* output_buffer, void* input_buffer, unsigned int n_frames,
-                          double /*stream_time*/, RtAudioStreamStatus status, void* /*user_data*/) {
+struct ShoegazeChain {
+    Distortion distortion;
+    Chorus chorus;
+    Reverb reverb;
+
+    explicit ShoegazeChain(float sample_rate) : chorus(sample_rate), reverb(sample_rate) {
+        distortion.set_drive(2.5f);
+        distortion.set_mix(0.4f);
+        chorus.set_rate_hz(0.6f);
+        chorus.set_depth_ms(3.0f);
+        chorus.set_mix(0.5f);
+        reverb.set_room_size(0.7f);
+        reverb.set_damping(0.4f);
+        reverb.set_mix(0.4f);
+    }
+};
+
+int shoegaze_callback(void* output_buffer, void* input_buffer, unsigned int n_frames,
+                       double /*stream_time*/, RtAudioStreamStatus status, void* user_data) {
     if (status) {
         g_xrun_count.fetch_add(1, std::memory_order_relaxed);
     }
     std::memcpy(output_buffer, input_buffer, n_frames * sizeof(float));
+
+    auto* chain = static_cast<ShoegazeChain*>(user_data);
+    auto* out = static_cast<float*>(output_buffer);
+    chain->distortion.process(out, n_frames);
+    chain->chorus.process(out, n_frames);
+    chain->reverb.process(out, n_frames);
+
     return 0;
 }
 
@@ -45,17 +73,19 @@ int main() {
     unsigned int sample_rate = 48000;
     unsigned int buffer_frames = 256;
 
+    ShoegazeChain chain(static_cast<float>(sample_rate));
+
     try {
         audio.openStream(&out_params, &in_params, RTAUDIO_FLOAT32, sample_rate, &buffer_frames,
-                          &passthrough_callback);
+                          &shoegaze_callback, &chain);
         audio.startStream();
     } catch (const std::exception& e) {
         std::cerr << "RtAudio error: " << e.what() << "\n";
         return 1;
     }
 
-    std::cout << "guitar-pedal-cpp: passthrough running at " << sample_rate << " Hz, "
-              << buffer_frames << "-frame buffer. Ctrl+C to stop.\n";
+    std::cout << "guitar-pedal-cpp: shoegaze mode (fuzz + chorus + reverb) running at " << sample_rate
+              << " Hz, " << buffer_frames << "-frame buffer. Ctrl+C to stop.\n";
 
     while (!g_stop.load(std::memory_order_relaxed)) {
         std::this_thread::sleep_for(std::chrono::milliseconds(500));

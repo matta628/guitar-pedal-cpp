@@ -97,15 +97,18 @@ int main() {
               << sample_rate << " Hz, " << buffer_frames << "-frame buffer. Ctrl+C to stop.\n";
 
 #ifdef PEDAL_HAVE_GPIO
-    // Unverified: chip name and line offset need confirming on the actual Pi
-    // with `gpioinfo` before this will do anything. Wire one leg of the
-    // button to this GPIO line, the other to GND (internal pull-up handles
-    // the rest).
+    // Pi 5 exposes its 40-pin header through the RP1 chip, which this kernel
+    // enumerates as gpiochip0 (confirmed with `gpiodetect`). Wire one leg of
+    // the button to this line, the other to GND; the internal pull-up handles
+    // the rest. Run `gpiodetect` if the board or kernel differs.
+    constexpr const char* kFootswitchChip = "gpiochip0";
+    constexpr unsigned int kFootswitchLine = 17;
+
     std::unique_ptr<GpioButton> footswitch;
     try {
-        footswitch = std::make_unique<GpioButton>("gpiochip4", 17);
+        footswitch = std::make_unique<GpioButton>(kFootswitchChip, kFootswitchLine);
         footswitch->start([&chain]() { chain.looper.on_trigger(); });
-        std::cout << "Footswitch armed on gpiochip4 line 17.\n";
+        std::cout << "Footswitch armed on " << kFootswitchChip << " line " << kFootswitchLine << ".\n";
     } catch (const std::exception& e) {
         std::cerr << "Footswitch unavailable (" << e.what() << "); looper has no physical trigger yet.\n";
     }

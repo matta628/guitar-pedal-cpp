@@ -64,10 +64,11 @@ playing.
 - [x] **6. Looper** — single mono track, fixed max buffer length, no overdub for v1: record → loop
       playback → stop/clear on one control. Builds on the ring-buffer foundation from Delay.
 - [ ] **7. "Shoegaze mode"** — chain fuzz + chorus + reverb into one preset, play through it live
-- [ ] **8. Stretch: physical footswitches** — wire real footswitches to the Pi's GPIO. Code exists
-      (`GpioButton`, libgpiod-based, Linux-only) and is wired into the looper's trigger, but is
-      **completely unverified** — no Linux/libgpiod environment to even compile-check it, let alone
-      confirm the guessed `gpiochip4` / line 17 are right. Needs `gpioinfo` on the actual Pi.
+- [ ] **8. Stretch: physical footswitches** — wire real footswitches to the Pi's GPIO.
+      `GpioButton` (libgpiod v2, Linux-only) is wired into the looper's trigger and now builds and
+      runs on the target Pi 5: it opens `gpiochip0`, requests line 17 as a pulled-up input, and
+      runs its debounce thread clean under ASan/UBSan. What's left is the physical half — no button
+      is wired to the header yet, so a real press has never been observed end to end.
 - [x] **9. Stretch: looper overdub** — layer additional passes onto an existing loop
 
 ## Dev environment
@@ -84,6 +85,10 @@ Dependencies: [RtAudio](https://github.com/thestk/rtaudio) (`brew install rtaudi
 support — CMake links it automatically when present and defines `PEDAL_HAVE_GPIO`; without it (e.g.
 on macOS) the build just skips GPIO entirely and the looper has no physical trigger.
 
+`GpioButton` targets the **libgpiod v2** API (Debian 13 / Raspberry Pi OS trixie ship v2 only; it
+is not source-compatible with v1). Built and tested against RtAudio 6.0.1 and libgpiod 2.2.1 on
+GCC 14.
+
 ```
 cmake -S . -B build
 cmake --build build
@@ -96,13 +101,17 @@ Each DSP stage (`Distortion`, `Delay`, `Chorus`, `Reverb`, `Looper`) is a self-c
 `process(float* buffer, size_t n_frames)` unit, offline-testable against synthetic signals without
 any audio hardware — `./build/offline_tests` (or `ctest` from the build dir) runs that suite.
 
-### Footswitch wiring (Pi only, unverified)
+### Footswitch wiring (Pi only)
 
-Wire one leg of a momentary pushbutton to a GPIO line, the other leg to a GND pin — the code
-requests the line with an internal pull-up, so no external resistor is needed. Before running,
-confirm the right chip name with `gpioinfo` (Pi 5's GPIO moved to a separate RP1 chip, commonly
-`gpiochip4`, but this hasn't been confirmed on real hardware) and update the chip name / line
-offset at the top of `main()` in `src/main.cpp` if they're wrong. `guitar_pedal` prints whether the
-footswitch armed successfully or not on startup either way.
+Wire one leg of a momentary pushbutton to GPIO17 (physical pin 11), the other leg to any GND pin
+(e.g. physical pin 9) — the code requests the line with an internal pull-up, so no external
+resistor is needed. Pressing the button pulls the line to ground; `GpioButton` debounces the
+transition on a background thread and fires the looper trigger.
+
+The Pi 5 drives its 40-pin header through the RP1 chip. On this kernel `gpiodetect` reports it as
+`gpiochip0` (54 lines), which is what `src/main.cpp` uses; older Pi 5 kernels enumerated it as
+`gpiochip4`, so run `gpiodetect` and adjust `kFootswitchChip` / `kFootswitchLine` in `main()` if
+your board or kernel differs. `guitar_pedal` prints whether the footswitch armed successfully on
+startup either way, and keeps running without it.
 
 Ctrl+C stops the passthrough and prints the xrun count.

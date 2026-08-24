@@ -3,37 +3,84 @@
 #include <gpiod.h>
 
 #include <chrono>
+#include <memory>
 #include <stdexcept>
 
 namespace {
 constexpr auto kPollInterval = std::chrono::milliseconds(5);
 constexpr auto kDebounceStable = std::chrono::milliseconds(20);
+
+// libgpiod v2 hands back three short-lived C objects that only matter until
+// the line request succeeds. Wrapping them keeps the throwing error paths
+// below from leaking them.
+template <typename T, void (*FreeFn)(T*)>
+struct CFree {
+    void operator()(T* p) const noexcept { FreeFn(p); }
+};
+
+using SettingsPtr = std::unique_ptr<gpiod_line_settings, CFree<gpiod_line_settings, gpiod_line_settings_free>>;
+using LineConfigPtr = std::unique_ptr<gpiod_line_config, CFree<gpiod_line_config, gpiod_line_config_free>>;
+using RequestConfigPtr =
+    std::unique_ptr<gpiod_request_config, CFree<gpiod_request_config, gpiod_request_config_free>>;
+
+std::string to_chip_path(const std::string& chip_name) {
+    if (!chip_name.empty() && chip_name.front() == '/') {
+        return chip_name;
+    }
+    return "/dev/" + chip_name;
+}
 }  // namespace
 
-GpioButton::GpioButton(const std::string& chip_name, unsigned int line_offset) {
-    chip_ = gpiod_chip_open_by_name(chip_name.c_str());
+GpioButton::GpioButton(const std::string& chip_name, unsigned int line_offset)
+    : line_offset_(line_offset) {
+    const std::string path = to_chip_path(chip_name);
+
+    // v2 opens the character device by path; v1's open-by-name is gone.
+    chip_ = gpiod_chip_open(path.c_str());
     if (!chip_) {
-        throw std::runtime_error("GpioButton: failed to open GPIO chip '" + chip_name +
-                                  "' (run `gpioinfo` on the Pi to find the right chip name)");
+        throw std::runtime_error("GpioButton: failed to open GPIO chip '" + path +
+                                 "' (run `gpiodetect` to list the chips on this board)");
     }
 
-    line_ = gpiod_chip_get_line(chip_, line_offset);
-    if (!line_) {
+    SettingsPtr settings(gpiod_line_settings_new());
+    if (!settings ||
+        gpiod_line_settings_set_direction(settings.get(), GPIOD_LINE_DIRECTION_INPUT) < 0 ||
+        gpiod_line_settings_set_bias(settings.get(), GPIOD_LINE_BIAS_PULL_UP) < 0) {
         gpiod_chip_close(chip_);
-        throw std::runtime_error("GpioButton: failed to get GPIO line " + std::to_string(line_offset));
+        throw std::runtime_error("GpioButton: failed to configure line as pulled-up input");
     }
 
-    if (gpiod_line_request_input_flags(line_, "guitar_pedal", GPIOD_LINE_REQUEST_FLAG_BIAS_PULL_UP) < 0) {
+    LineConfigPtr line_cfg(gpiod_line_config_new());
+    if (!line_cfg || gpiod_line_config_add_line_settings(line_cfg.get(), &line_offset_, 1,
+                                                         settings.get()) < 0) {
         gpiod_chip_close(chip_);
-        throw std::runtime_error("GpioButton: failed to request GPIO line " + std::to_string(line_offset) +
-                                  " as input (already in use?)");
+        throw std::runtime_error("GpioButton: failed to build line config for line " +
+                                 std::to_string(line_offset));
+    }
+
+    RequestConfigPtr req_cfg(gpiod_request_config_new());
+    if (!req_cfg) {
+        gpiod_chip_close(chip_);
+        throw std::runtime_error("GpioButton: failed to allocate request config");
+    }
+    gpiod_request_config_set_consumer(req_cfg.get(), "guitar_pedal");
+
+    request_ = gpiod_chip_request_lines(chip_, req_cfg.get(), line_cfg.get());
+    if (!request_) {
+        gpiod_chip_close(chip_);
+        throw std::runtime_error("GpioButton: failed to request GPIO line " +
+                                 std::to_string(line_offset) + " as input (already in use?)");
     }
 }
 
 GpioButton::~GpioButton() {
     stop();
-    gpiod_line_release(line_);
-    gpiod_chip_close(chip_);
+    if (request_) {
+        gpiod_line_request_release(request_);
+    }
+    if (chip_) {
+        gpiod_chip_close(chip_);
+    }
 }
 
 void GpioButton::start(std::function<void()> on_press) {
@@ -50,15 +97,19 @@ void GpioButton::stop() {
 }
 
 void GpioButton::poll_loop() {
-    int last_stable = gpiod_line_get_value(line_);  // 1 = released (pulled up), 0 = pressed
-    int last_seen = last_stable;
+    // ACTIVE (1) = released, held high by the pull-up; INACTIVE (0) = pressed to GND.
+    gpiod_line_value last_stable = gpiod_line_request_get_value(request_, line_offset_);
+    if (last_stable == GPIOD_LINE_VALUE_ERROR) {
+        last_stable = GPIOD_LINE_VALUE_ACTIVE;  // assume released until a read succeeds
+    }
+    gpiod_line_value last_seen = last_stable;
     auto last_change = std::chrono::steady_clock::now();
 
     while (running_.load(std::memory_order_relaxed)) {
         std::this_thread::sleep_for(kPollInterval);
 
-        const int value = gpiod_line_get_value(line_);
-        if (value < 0) {
+        const gpiod_line_value value = gpiod_line_request_get_value(request_, line_offset_);
+        if (value == GPIOD_LINE_VALUE_ERROR) {
             continue;  // transient read error; retry next poll
         }
 
@@ -70,7 +121,8 @@ void GpioButton::poll_loop() {
         }
 
         if (value != last_stable && now - last_change >= kDebounceStable) {
-            const bool pressed = (last_stable == 1 && value == 0);
+            const bool pressed =
+                (last_stable == GPIOD_LINE_VALUE_ACTIVE && value == GPIOD_LINE_VALUE_INACTIVE);
             last_stable = value;
             if (pressed && on_press_) {
                 on_press_();

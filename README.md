@@ -62,11 +62,12 @@ playing.
 - [x] **4. Chorus** — LFO-modulated short delay line
 - [x] **5. Reverb** — algorithmic reverb (Schroeder/Freeverb-style feedback delay network)
 - [x] **6. Looper** — single mono track, fixed max buffer length, no overdub for v1: record → loop
-      playback → stop/clear on one control. Builds on the ring-buffer foundation from Delay. Not
-      yet wired to a physical/keyboard trigger — that lands with Milestone 8.
+      playback → stop/clear on one control. Builds on the ring-buffer foundation from Delay.
 - [ ] **7. "Shoegaze mode"** — chain fuzz + chorus + reverb into one preset, play through it live
-- [ ] **8. Stretch: physical footswitches** — wire real footswitches to the Pi's GPIO. Blocked on
-      hardware (no Pi/footswitches connected yet).
+- [ ] **8. Stretch: physical footswitches** — wire real footswitches to the Pi's GPIO. Code exists
+      (`GpioButton`, libgpiod-based, Linux-only) and is wired into the looper's trigger, but is
+      **completely unverified** — no Linux/libgpiod environment to even compile-check it, let alone
+      confirm the guessed `gpiochip4` / line 17 are right. Needs `gpioinfo` on the actual Pi.
 - [x] **9. Stretch: looper overdub** — layer additional passes onto an existing loop
 
 ## Dev environment
@@ -79,7 +80,9 @@ number rather than a sterile one.
 ## Build
 
 Dependencies: [RtAudio](https://github.com/thestk/rtaudio) (`brew install rtaudio` on macOS,
-`apt install librtaudio-dev` on the Pi).
+`apt install librtaudio-dev` on the Pi). On the Pi, also `apt install libgpiod-dev` for footswitch
+support — CMake links it automatically when present and defines `PEDAL_HAVE_GPIO`; without it (e.g.
+on macOS) the build just skips GPIO entirely and the looper has no physical trigger.
 
 ```
 cmake -S . -B build
@@ -92,5 +95,14 @@ Add `-DENABLE_SANITIZERS=ON` to the configure step for an ASan+UBSan build.
 Each DSP stage (`Distortion`, `Delay`, `Chorus`, `Reverb`, `Looper`) is a self-contained
 `process(float* buffer, size_t n_frames)` unit, offline-testable against synthetic signals without
 any audio hardware — `./build/offline_tests` (or `ctest` from the build dir) runs that suite.
+
+### Footswitch wiring (Pi only, unverified)
+
+Wire one leg of a momentary pushbutton to a GPIO line, the other leg to a GND pin — the code
+requests the line with an internal pull-up, so no external resistor is needed. Before running,
+confirm the right chip name with `gpioinfo` (Pi 5's GPIO moved to a separate RP1 chip, commonly
+`gpiochip4`, but this hasn't been confirmed on real hardware) and update the chip name / line
+offset at the top of `main()` in `src/main.cpp` if they're wrong. `guitar_pedal` prints whether the
+footswitch armed successfully or not on startup either way.
 
 Ctrl+C stops the passthrough and prints the xrun count.

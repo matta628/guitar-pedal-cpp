@@ -29,6 +29,15 @@ add_library(pedal_dsp STATIC
 )
 target_include_directories(pedal_dsp PUBLIC include)
 
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  pkg_check_modules(GPIOD IMPORTED_TARGET libgpiod)
+  if(GPIOD_FOUND)
+    target_sources(pedal_dsp PRIVATE src/GpioButton.cpp)
+    target_link_libraries(pedal_dsp PUBLIC PkgConfig::GPIOD)
+    target_compile_definitions(pedal_dsp PUBLIC PEDAL_HAVE_GPIO)
+  endif()
+endif()
+
 add_executable(guitar_pedal src/main.cpp)
 target_link_libraries(guitar_pedal PRIVATE pedal_dsp PkgConfig::RTAUDIO)
 

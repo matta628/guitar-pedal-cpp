@@ -5,11 +5,17 @@
 #include <csignal>
 #include <cstring>
 #include <iostream>
+#include <memory>
 #include <thread>
 
 #include "Chorus.h"
 #include "Distortion.h"
+#include "Looper.h"
 #include "Reverb.h"
+
+#ifdef PEDAL_HAVE_GPIO
+#include "GpioButton.h"
+#endif
 
 namespace {
 
@@ -22,8 +28,10 @@ struct ShoegazeChain {
     Distortion distortion;
     Chorus chorus;
     Reverb reverb;
+    Looper looper;
 
-    explicit ShoegazeChain(float sample_rate) : chorus(sample_rate), reverb(sample_rate) {
+    explicit ShoegazeChain(float sample_rate)
+        : chorus(sample_rate), reverb(sample_rate), looper(sample_rate) {
         distortion.set_drive(2.5f);
         distortion.set_mix(0.4f);
         chorus.set_rate_hz(0.6f);
@@ -47,6 +55,7 @@ int shoegaze_callback(void* output_buffer, void* input_buffer, unsigned int n_fr
     chain->distortion.process(out, n_frames);
     chain->chorus.process(out, n_frames);
     chain->reverb.process(out, n_frames);
+    chain->looper.process(out, n_frames);
 
     return 0;
 }
@@ -84,8 +93,25 @@ int main() {
         return 1;
     }
 
-    std::cout << "guitar-pedal-cpp: shoegaze mode (fuzz + chorus + reverb) running at " << sample_rate
-              << " Hz, " << buffer_frames << "-frame buffer. Ctrl+C to stop.\n";
+    std::cout << "guitar-pedal-cpp: shoegaze mode (fuzz + chorus + reverb + looper) running at "
+              << sample_rate << " Hz, " << buffer_frames << "-frame buffer. Ctrl+C to stop.\n";
+
+#ifdef PEDAL_HAVE_GPIO
+    // Unverified: chip name and line offset need confirming on the actual Pi
+    // with `gpioinfo` before this will do anything. Wire one leg of the
+    // button to this GPIO line, the other to GND (internal pull-up handles
+    // the rest).
+    std::unique_ptr<GpioButton> footswitch;
+    try {
+        footswitch = std::make_unique<GpioButton>("gpiochip4", 17);
+        footswitch->start([&chain]() { chain.looper.on_trigger(); });
+        std::cout << "Footswitch armed on gpiochip4 line 17.\n";
+    } catch (const std::exception& e) {
+        std::cerr << "Footswitch unavailable (" << e.what() << "); looper has no physical trigger yet.\n";
+    }
+#else
+    std::cout << "Built without GPIO support; looper has no physical trigger.\n";
+#endif
 
     while (!g_stop.load(std::memory_order_relaxed)) {
         std::this_thread::sleep_for(std::chrono::milliseconds(500));

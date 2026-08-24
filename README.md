@@ -53,7 +53,7 @@ playing.
 
 ## Roadmap
 
-- [ ] **0. Toolchain + fundamentals** — CMake project skeleton, `-Wall -Wextra`, a sanitizer build
+- [x] **0. Toolchain + fundamentals** — CMake project skeleton, `-Wall -Wextra`, a sanitizer build
       (ASan/UBSan)
 - [ ] **1. Clean passthrough** — guitar → Pi → out, near-zero added latency; the foundational
       "no allocation/locks in the audio callback" milestone everything else builds on

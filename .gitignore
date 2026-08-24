@@ -1,0 +1,19 @@
+# Build artifacts
+build/
+out/
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+compile_commands.json
+*.o
+*.obj
+*.a
+*.so
+*.dylib
+*.exe
+
+# Editor / OS
+.DS_Store
+.vscode/
+.idea/
+*.swp

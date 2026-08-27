@@ -48,6 +48,12 @@ endif()
 add_executable(guitar_pedal src/main.cpp)
 target_link_libraries(guitar_pedal PRIVATE pedal_dsp PkgConfig::RTAUDIO)
 
+# Bench diagnostic for the audio path. Needs RtAudio but no GPIO, so it builds
+# on the dev machine too — unlike gpio_check, which only exists where libgpiod
+# does.
+add_executable(audio_check tools/audio_check.cpp)
+target_link_libraries(audio_check PRIVATE pedal_dsp PkgConfig::RTAUDIO)
+
 enable_testing()
 add_executable(offline_tests tests/offline_tests.cpp)
 target_link_libraries(offline_tests PRIVATE pedal_dsp)

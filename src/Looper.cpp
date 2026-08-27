@@ -62,4 +62,6 @@ void Looper::process(float* buffer, std::size_t n_frames) {
             read_index_ = (read_index_ + 1) % loop_length_;
         }
     }
+
+    published_state_.store(state_, std::memory_order_relaxed);
 }

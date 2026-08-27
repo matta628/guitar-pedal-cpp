@@ -3,8 +3,10 @@
 #include <vector>
 
 #include "Chorus.h"
+#include "ClickDetector.h"
 #include "Delay.h"
 #include "Distortion.h"
+#include "LedPattern.h"
 #include "Looper.h"
 #include "Reverb.h"
 
@@ -194,6 +196,97 @@ void test_looper_overdub_layers_and_decays() {
           "Looper overdub: Empty is a no-op passthrough after clear()");
 }
 
+
+void test_click_detector_single_and_double() {
+    using Clock = ClickDetector::Clock;
+    using std::chrono::milliseconds;
+
+    int singles = 0;
+    int doubles = 0;
+    ClickDetector detector(milliseconds(350));
+    detector.set_handlers([&singles]() { ++singles; }, [&doubles]() { ++doubles; });
+
+    const Clock::time_point t0 = Clock::time_point{} + milliseconds(10000);
+
+    detector.on_press(t0);
+    detector.poll(t0 + milliseconds(100));
+    check(singles == 0 && doubles == 0,
+          "ClickDetector: nothing fires while the double-click window is still open");
+
+    detector.poll(t0 + milliseconds(400));
+    check(singles == 1 && doubles == 0,
+          "ClickDetector: a lone press reports a single click once the window closes");
+
+    singles = doubles = 0;
+    const Clock::time_point t1 = t0 + milliseconds(2000);
+    detector.on_press(t1);
+    detector.on_press(t1 + milliseconds(200));
+    check(singles == 0 && doubles == 1,
+          "ClickDetector: a second press inside the window reports a double click immediately");
+
+    detector.poll(t1 + milliseconds(1000));
+    check(singles == 0 && doubles == 1,
+          "ClickDetector: a consumed double click leaves nothing pending to flush as a single");
+
+    singles = doubles = 0;
+    const Clock::time_point t2 = t1 + milliseconds(5000);
+    detector.on_press(t2);
+    detector.on_press(t2 + milliseconds(600));
+    check(singles == 1 && doubles == 0,
+          "ClickDetector: a second press past the window is a new gesture, not a double click");
+}
+
+void test_led_pattern_base_modes() {
+    using Clock = LedPattern::Clock;
+    using std::chrono::milliseconds;
+    const Clock::time_point t0 = Clock::time_point{} + milliseconds(10000);
+
+    LedPattern pattern;
+    check(pattern.value(t0) == false, "LedPattern: default base is off");
+
+    pattern.set_solid();
+    check(pattern.value(t0) && pattern.value(t0 + milliseconds(5000)),
+          "LedPattern: solid stays lit regardless of time");
+
+    pattern.set_blink(milliseconds(200), t0);
+    check(pattern.value(t0) && pattern.value(t0 + milliseconds(99)),
+          "LedPattern: blink is lit for the first half of its period");
+    check(!pattern.value(t0 + milliseconds(150)),
+          "LedPattern: blink is dark for the second half of its period");
+    check(pattern.value(t0 + milliseconds(1000)),
+          "LedPattern: blink phase keeps cycling on the same period");
+
+    // Re-asserting the same blink must not restart the phase, or the 20 ms
+    // indicator loop would pin the LED to the top of its cycle forever.
+    pattern.set_blink(milliseconds(200), t0 + milliseconds(150));
+    check(!pattern.value(t0 + milliseconds(150)),
+          "LedPattern: re-asserting an unchanged blink preserves the existing phase");
+}
+
+void test_led_pattern_burst_overrides_then_releases() {
+    using Clock = LedPattern::Clock;
+    using std::chrono::milliseconds;
+    const Clock::time_point t0 = Clock::time_point{} + milliseconds(10000);
+
+    LedPattern pattern;
+    pattern.set_off();
+    pattern.flash_burst(3, milliseconds(100), milliseconds(100), t0);
+
+    check(pattern.value(t0), "LedPattern: burst lights immediately on its first flash");
+    check(!pattern.value(t0 + milliseconds(150)), "LedPattern: burst goes dark between flashes");
+    check(pattern.value(t0 + milliseconds(200)), "LedPattern: burst lights again on flash two");
+    check(pattern.value(t0 + milliseconds(400)), "LedPattern: burst lights again on flash three");
+    check(!pattern.value(t0 + milliseconds(700)),
+          "LedPattern: after 3 flashes the burst ends and the off base takes over");
+
+    pattern.set_solid();
+    pattern.flash_burst(1, milliseconds(100), milliseconds(100), t0);
+    check(!pattern.value(t0 + milliseconds(150)),
+          "LedPattern: a burst overrides a solid base while it runs");
+    check(pattern.value(t0 + milliseconds(500)),
+          "LedPattern: the solid base returns once the burst finishes");
+}
+
 }  // namespace
 
 int main() {
@@ -206,6 +299,9 @@ int main() {
     test_reverb_impulse_produces_bounded_decaying_tail();
     test_looper_record_and_play_back();
     test_looper_overdub_layers_and_decays();
+    test_click_detector_single_and_double();
+    test_led_pattern_base_modes();
+    test_led_pattern_burst_overrides_then_releases();
 
     if (g_failures > 0) {
         std::printf("\n%d test(s) failed\n", g_failures);

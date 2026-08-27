@@ -24,7 +24,11 @@ public:
     GpioButton(const GpioButton&) = delete;
     GpioButton& operator=(const GpioButton&) = delete;
 
-    void start(std::function<void()> on_press);
+    // on_press fires once per debounced release->press transition.
+    // on_tick, if supplied, fires once per poll interval on the same thread,
+    // so callers needing their own timeouts (ClickDetector) don't have to
+    // start a second thread to get one.
+    void start(std::function<void()> on_press, std::function<void()> on_tick = {});
     void stop();
 
 private:
@@ -35,6 +39,7 @@ private:
     unsigned int line_offset_ = 0;
 
     std::function<void()> on_press_;
+    std::function<void()> on_tick_;
     std::thread thread_;
     std::atomic<bool> running_{false};
 };

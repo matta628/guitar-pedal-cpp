@@ -83,8 +83,9 @@ GpioButton::~GpioButton() {
     }
 }
 
-void GpioButton::start(std::function<void()> on_press) {
+void GpioButton::start(std::function<void()> on_press, std::function<void()> on_tick) {
     on_press_ = std::move(on_press);
+    on_tick_ = std::move(on_tick);
     running_.store(true, std::memory_order_relaxed);
     thread_ = std::thread(&GpioButton::poll_loop, this);
 }
@@ -109,11 +110,15 @@ void GpioButton::poll_loop() {
         std::this_thread::sleep_for(kPollInterval);
 
         const gpiod_line_value value = gpiod_line_request_get_value(request_, line_offset_);
+
+        const auto now = std::chrono::steady_clock::now();
+        if (on_tick_) {
+            on_tick_();
+        }
+
         if (value == GPIOD_LINE_VALUE_ERROR) {
             continue;  // transient read error; retry next poll
         }
-
-        const auto now = std::chrono::steady_clock::now();
         if (value != last_seen) {
             last_seen = value;
             last_change = now;

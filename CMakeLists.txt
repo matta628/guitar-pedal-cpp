@@ -26,15 +26,22 @@ add_library(pedal_dsp STATIC
   src/Chorus.cpp
   src/Reverb.cpp
   src/Looper.cpp
+  src/ClickDetector.cpp
+  src/LedPattern.cpp
 )
 target_include_directories(pedal_dsp PUBLIC include)
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   pkg_check_modules(GPIOD IMPORTED_TARGET libgpiod)
   if(GPIOD_FOUND)
-    target_sources(pedal_dsp PRIVATE src/GpioButton.cpp)
+    target_sources(pedal_dsp PRIVATE src/GpioButton.cpp src/GpioLed.cpp src/Lcd1602.cpp)
     target_link_libraries(pedal_dsp PUBLIC PkgConfig::GPIOD)
     target_compile_definitions(pedal_dsp PUBLIC PEDAL_HAVE_GPIO)
+
+    # Bench diagnostic for the GPIO wiring. Only exists where libgpiod does,
+    # and needs no audio interface, so it can run on a bare board.
+    add_executable(gpio_check tools/gpio_check.cpp)
+    target_link_libraries(gpio_check PRIVATE pedal_dsp)
   endif()
 endif()
 

@@ -49,7 +49,9 @@ playing.
    changeable without allocating or blocking in the audio thread.
 4. **Preset chaining** — combining stages into a named signal chain (e.g. "shoegaze mode" = fuzz +
    chorus + reverb).
-5. **Stretch: GPIO footswitches** — physical control input to switch presets/bypass effects live.
+5. **Control surface** — GPIO footswitches for looper transport and preset switching, with LED and
+   LCD1602 status output. All of it runs on one 50 Hz indicator thread; none of it touches the
+   audio callback.
 
 ## Roadmap
 
@@ -64,11 +66,12 @@ playing.
 - [x] **6. Looper** — single mono track, fixed max buffer length, no overdub for v1: record → loop
       playback → stop/clear on one control. Builds on the ring-buffer foundation from Delay.
 - [ ] **7. "Shoegaze mode"** — chain fuzz + chorus + reverb into one preset, play through it live
-- [ ] **8. Stretch: physical footswitches** — wire real footswitches to the Pi's GPIO.
-      `GpioButton` (libgpiod v2, Linux-only) is wired into the looper's trigger and now builds and
-      runs on the target Pi 5: it opens `gpiochip0`, requests line 17 as a pulled-up input, and
-      runs its debounce thread clean under ASan/UBSan. What's left is the physical half — no button
-      is wired to the header yet, so a real press has never been observed end to end.
+- [ ] **8. Stretch: physical footswitches + status display** — two momentary footswitches on the
+      Pi's GPIO, plus LED and LCD status output. Switch 1 drives the looper
+      (record → play → overdub); switch 2 clears the loop on a single click and cycles the effect
+      preset on a double click. `GpioButton`, `GpioLed` and `Lcd1602` (libgpiod v2, Linux-only) all
+      build and run on the target Pi 5. What's left is the physical half — nothing is wired to the
+      header yet, so a real press has never been observed end to end.
 - [x] **9. Stretch: looper overdub** — layer additional passes onto an existing loop
 
 ## Dev environment
@@ -97,21 +100,44 @@ cmake --build build
 
 Add `-DENABLE_SANITIZERS=ON` to the configure step for an ASan+UBSan build.
 
+On the Pi the build also produces `./build/gpio_check`, a bench diagnostic that exercises one piece
+of hardware at a time (`gpio_check led 22`, `gpio_check button 17`, `gpio_check clicks 27`,
+`gpio_check lcd`, `gpio_check all`). It needs no audio interface, so wiring can be verified before
+the pedal itself is in the picture.
+
 Each DSP stage (`Distortion`, `Delay`, `Chorus`, `Reverb`, `Looper`) is a self-contained
 `process(float* buffer, size_t n_frames)` unit, offline-testable against synthetic signals without
 any audio hardware — `./build/offline_tests` (or `ctest` from the build dir) runs that suite.
 
-### Footswitch wiring (Pi only)
+### Control surface wiring (Pi only)
 
-Wire one leg of a momentary pushbutton to GPIO17 (physical pin 11), the other leg to any GND pin
-(e.g. physical pin 9) — the code requests the line with an internal pull-up, so no external
-resistor is needed. Pressing the button pulls the line to ground; `GpioButton` debounces the
-transition on a background thread and fires the looper trigger.
+| Function | GPIO | Header pin |
+|---|---|---|
+| Looper switch — record → play → overdub | 17 | 11 |
+| Utility switch — click: clear · double-click: cycle preset | 27 | 13 |
+| Looper LED — solid: recording · slow blink: playing · fast blink: overdubbing | 22 | 15 |
+| Preset LED — flashes the preset number; one long flash on clear | 23 | 16 |
+| LCD1602 RS / E / D4 / D5 / D6 / D7 | 5 / 6 / 13 / 19 / 26 / 16 | 29 / 31 / 33 / 35 / 37 / 36 |
+
+Wire one leg of each momentary pushbutton to its GPIO line and the other to GND — the code requests
+the lines with an internal pull-up, so no external resistor is needed. Each LED needs a series
+resistor (220Ω is fine) between the GPIO pin and its anode, with the cathode to GND. The LCD runs in
+4-bit mode with `RW` tied to GND: the panel is write-only, so no 5V logic line ever drives a
+(non-5V-tolerant) Pi input, and the driver waits out fixed datasheet delays rather than polling the
+busy flag.
+
+The preset cycle is `shoegaze → clean → fuzz → chorus → reverb → …`. Clean is a real preset rather
+than a bypass flag — the looper runs in every preset, so a loop recorded through fuzz still plays
+back after switching to clean.
+
+Single-click detection is inherently late: it can't fire until the 350 ms double-click window
+closes. That's why the gesture pair lives on the utility switch and never on the looper switch,
+where the press instant defines the loop boundary.
 
 The Pi 5 drives its 40-pin header through the RP1 chip. On this kernel `gpiodetect` reports it as
 `gpiochip0` (54 lines), which is what `src/main.cpp` uses; older Pi 5 kernels enumerated it as
-`gpiochip4`, so run `gpiodetect` and adjust `kFootswitchChip` / `kFootswitchLine` in `main()` if
-your board or kernel differs. `guitar_pedal` prints whether the footswitch armed successfully on
-startup either way, and keeps running without it.
+`gpiochip4`, so run `gpiodetect` and adjust `kGpioChip` and the line constants in `main()` if your
+board or kernel differs. `guitar_pedal` prints which of the switches, LEDs and LCD armed
+successfully on startup, and keeps running without any of them.
 
 Ctrl+C stops the passthrough and prints the xrun count.

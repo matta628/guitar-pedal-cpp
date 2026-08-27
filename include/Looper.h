@@ -24,7 +24,10 @@ public:
 
     void set_overdub_decay(float decay);
 
-    State state() const { return state_; }
+    // Reads the state published at the end of the last process() call, so a
+    // non-audio thread (the LED indicator loop) can poll it without racing
+    // the audio thread's plain state_ member.
+    State state() const { return published_state_.load(std::memory_order_relaxed); }
 
     void process(float* buffer, std::size_t n_frames) override;
 
@@ -34,6 +37,7 @@ private:
     std::size_t read_index_ = 0;
     std::size_t loop_length_ = 0;
     State state_ = State::Empty;
+    std::atomic<State> published_state_{State::Empty};
 
     std::atomic<bool> trigger_pending_{false};
     std::atomic<bool> clear_pending_{false};

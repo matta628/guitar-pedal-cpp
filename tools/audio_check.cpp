@@ -57,6 +57,19 @@ constexpr unsigned int kBufferFrames = 256;
 std::atomic<bool> g_stop{false};
 void on_sigint(int) { g_stop.store(true, std::memory_order_relaxed); }
 
+// RtAudio probes every backend on construction and prints a warning for each
+// one that will not open. On a headless Pi that is a dozen lines of ALSA, JACK
+// and Pulse noise ahead of the device table, which buries the answer the user
+// actually came for. Warnings are held here and only printed when something
+// fails, at which point they are usually the explanation.
+std::vector<std::string> g_warnings;
+
+void print_warnings() {
+    if (g_warnings.empty()) return;
+    std::cerr << "\nWhat the audio backends reported while probing:\n";
+    for (const std::string& w : g_warnings) std::cerr << "  " << w << "\n";
+}
+
 // Written by the audio callback, read by the printing loop. Peaks are stored as
 // raw bits so the callback never blocks and never allocates.
 struct Levels {
@@ -203,6 +216,7 @@ bool open_stream(RtAudio& audio, RtAudio::StreamParameters* out_params,
     if (audio.openStream(out_params, in_params, RTAUDIO_FLOAT32, rate, buffer_frames, cb,
                          user_data) != RTAUDIO_NO_ERROR) {
         std::cerr << "openStream failed: " << audio.getErrorText() << "\n";
+        print_warnings();
         return false;
     }
     if (audio.startStream() != RTAUDIO_NO_ERROR) {
@@ -361,9 +375,16 @@ float run_meter(Levels& levels, bool show_output, unsigned int rate) {
 int mode_list(RtAudio& audio) {
     std::vector<Device> devices = enumerate(audio);
     if (devices.empty()) {
-        std::cerr << "RtAudio found no devices at all.\n"
-                     "Check `aplay -l` and `arecord -l` — if those are empty too, the interface\n"
-                     "is not enumerating and this is a USB or cable problem, not a code problem.\n";
+        std::cerr << "RtAudio found no usable devices.\n\n"
+                     "Check in this order — the first empty one is where the trail ends:\n"
+                     "  lsusb        is the interface plugged in and enumerating at all?\n"
+                     "  arecord -l   does ALSA see a capture device?\n"
+                     "  aplay -l     does ALSA see a playback device?\n"
+                     "\nIf lsusb shows only root hubs, nothing is connected and this is a cable\n"
+                     "or a power problem, not a code problem. Note that a Pi with no display\n"
+                     "attached also has no usable HDMI audio, so an empty list is normal until\n"
+                     "the USB interface is in.\n";
+        print_warnings();
         return 1;
     }
     print_devices(devices);
@@ -574,7 +595,17 @@ int main(int argc, char** argv) {
     std::string arg1 = argc > 2 ? argv[2] : "";
     std::string arg2 = argc > 3 ? argv[3] : "";
 
+#if PEDAL_RTAUDIO6
+    RtAudio audio(RtAudio::UNSPECIFIED, [](RtAudioErrorType type, const std::string& text) {
+        if (type == RTAUDIO_WARNING) {
+            g_warnings.push_back(text);
+        } else {
+            std::cerr << text << "\n";
+        }
+    });
+#else
     RtAudio audio;
+#endif
 
     if (mode == "list") return mode_list(audio);
     if (mode == "meter") return mode_meter(audio, arg1);

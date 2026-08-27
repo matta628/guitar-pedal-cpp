@@ -265,6 +265,39 @@ unsigned int pick_rate(const Device& d) {
     return kPreferredRate;
 }
 
+// Two different devices must agree on ONE rate: an RtAudio duplex stream has a
+// single sampleRate for both directions. A capture-only device that offers just
+// 44100 and a headset that offers just 48000 have no intersection, and the
+// failure is openStream refusing outright, not a glitch — so it is worth saying
+// so plainly instead of letting a driver error explain it.
+bool pick_shared_rate(const Device& in_dev, const Device& out_dev, unsigned int* rate) {
+    if (in_dev.id == out_dev.id) {
+        *rate = pick_rate(in_dev);
+        return true;
+    }
+    std::vector<unsigned int> shared;
+    for (unsigned int r : in_dev.rates) {
+        if (std::find(out_dev.rates.begin(), out_dev.rates.end(), r) != out_dev.rates.end()) {
+            shared.push_back(r);
+        }
+    }
+    if (shared.empty()) {
+        std::cerr << "These two devices share no sample rate, so one stream cannot drive both.\n"
+                  << "  " << in_dev.name << " offers:";
+        for (unsigned int r : in_dev.rates) std::cerr << " " << r;
+        std::cerr << "\n  " << out_dev.name << " offers:";
+        for (unsigned int r : out_dev.rates) std::cerr << " " << r;
+        std::cerr << "\n\nThis is not fixable by picking a different buffer size. Either use one\n"
+                     "device for both directions, or use an output device that offers a rate the\n"
+                     "input device also supports.\n";
+        return false;
+    }
+    *rate = std::find(shared.begin(), shared.end(), kPreferredRate) != shared.end()
+                ? kPreferredRate
+                : shared.front();
+    return true;
+}
+
 void print_devices(const std::vector<Device>& devices) {
     std::cout << "id  in  out  rate   name\n"
                  "--  --  ---  -----  ----------------------------------------\n";
@@ -555,8 +588,11 @@ int mode_thru(RtAudio& audio, const std::string& out_spec, const std::string& in
     } else {
         std::cout << "input:  " << in_dev.name << " (id " << in_dev.id << ")\n"
                   << "output: " << out_dev.name << " (id " << out_dev.id << ")\n"
-                  << "Different devices means two clocks with no shared word clock — expect\n"
-                  << "periodic glitches as they drift. Fine for a proof, not for playing.\n";
+                  << "Two devices means two crystals with no shared word clock. They differ by\n"
+                  << "up to ~200ppm, which at this rate is a few samples of slip per second, so a\n"
+                  << "whole buffer accumulates every 30s to a minute and you get a click. Audio is\n"
+                  << "fine in between. Good enough to prove the DSP runs; wrong for a looper, where\n"
+                  << "the artifact makes correct code sound broken.\n";
     }
 
     RtAudio::StreamParameters out_params;
@@ -567,7 +603,9 @@ int mode_thru(RtAudio& audio, const std::string& out_spec, const std::string& in
     in_params.nChannels = 1;
     unsigned int buffer_frames = kBufferFrames;
 
-    unsigned int rate = pick_rate(in_dev);
+    unsigned int rate = 0;
+    if (!pick_shared_rate(in_dev, out_dev, &rate)) return 1;
+
     Levels levels;
     if (!open_stream(audio, &out_params, &in_params, &buffer_frames, &thru_callback, &levels,
                      rate)) {

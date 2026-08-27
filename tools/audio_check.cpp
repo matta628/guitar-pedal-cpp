@@ -54,7 +54,10 @@
 
 namespace {
 
-constexpr unsigned int kSampleRate = 48000;
+// Preferred, not required. The Fender Mustang Micro, for one, advertises 44100
+// and nothing else, so a hardcoded 48000 fails to open a device that works
+// perfectly well — a driver problem dressed up as a hardware problem.
+constexpr unsigned int kPreferredRate = 48000;
 constexpr unsigned int kBufferFrames = 256;
 
 std::atomic<bool> g_stop{false};
@@ -139,6 +142,7 @@ struct Levels {
     std::atomic<float> out_peak{0.0f};
     std::atomic<unsigned> xruns{0};
     std::atomic<unsigned long long> frames{0};
+    unsigned channels = 1;  // set before the stream opens, read-only afterwards
 };
 
 void bump_peak(std::atomic<float>& slot, float value) {
@@ -251,6 +255,16 @@ bool guess_device(const std::vector<Device>& devices, bool need_input, bool need
     return true;
 }
 
+// Devices advertise a rate list; honour it rather than insisting on 48k.
+unsigned int pick_rate(const Device& d) {
+    for (unsigned int r : d.rates) {
+        if (r == kPreferredRate) return r;
+    }
+    if (d.preferred_rate > 0) return d.preferred_rate;
+    if (!d.rates.empty()) return d.rates.front();
+    return kPreferredRate;
+}
+
 void print_devices(const std::vector<Device>& devices) {
     std::cout << "id  in  out  rate   name\n"
                  "--  --  ---  -----  ----------------------------------------\n";
@@ -310,7 +324,8 @@ int input_callback(void* /*out*/, void* input_buffer, unsigned int n_frames, dou
                    RtAudioStreamStatus status, void* user_data) {
     auto* levels = static_cast<Levels*>(user_data);
     if (status) levels->xruns.fetch_add(1, std::memory_order_relaxed);
-    bump_peak(levels->in_peak, block_peak(static_cast<const float*>(input_buffer), n_frames));
+    bump_peak(levels->in_peak,
+              block_peak(static_cast<const float*>(input_buffer), n_frames * levels->channels));
     levels->frames.fetch_add(n_frames, std::memory_order_relaxed);
     return 0;
 }
@@ -462,19 +477,24 @@ int mode_meter(RtAudio& audio, const std::string& spec) {
         return 1;
     }
 
-    std::cout << "input: " << dev.name << " (id " << dev.id << ")\n";
+    unsigned int rate = pick_rate(dev);
+    unsigned int channels = std::min(2u, dev.in_channels);
+    std::cout << "input: " << dev.name << " (id " << dev.id << ", " << rate << " Hz, " << channels
+              << (channels == 1 ? " channel)\n" : " channels)\n");
+
     RtAudio::StreamParameters in_params;
     in_params.deviceId = dev.id;
-    in_params.nChannels = 1;
+    in_params.nChannels = channels;
     unsigned int buffer_frames = kBufferFrames;
 
     Levels levels;
+    levels.channels = channels;
     if (!open_stream(audio, nullptr, &in_params, &buffer_frames, &input_callback, &levels,
-                     kSampleRate)) {
+                     rate)) {
         return 1;
     }
     std::cout << "Play the guitar. The bar should move.";
-    float loudest = run_meter(levels, false, kSampleRate);
+    float loudest = run_meter(levels, false, rate);
     close_stream(audio);
 
     if (loudest < 1e-4f) {
@@ -501,14 +521,15 @@ int mode_tone(RtAudio& audio, const std::string& spec, double hz) {
     out_params.nChannels = 1;
     unsigned int buffer_frames = kBufferFrames;
 
+    unsigned int rate = pick_rate(dev);
     ToneState state;
-    state.step = 2.0 * M_PI * hz / kSampleRate;
+    state.step = 2.0 * M_PI * hz / rate;
     if (!open_stream(audio, &out_params, nullptr, &buffer_frames, &tone_callback, &state,
-                     kSampleRate)) {
+                     rate)) {
         return 1;
     }
     std::cout << "Playing a " << hz << " Hz sine at -12 dBFS. You should hear it in the headphones.";
-    run_meter(state.levels, false, kSampleRate);
+    run_meter(state.levels, false, rate);
     close_stream(audio);
     std::cout << "\nIf that was silent, the Pi is generating audio but it is not reaching the\n"
                  "headphones — wrong device, or the Micro is not in USB audio mode.\n";
@@ -546,21 +567,22 @@ int mode_thru(RtAudio& audio, const std::string& out_spec, const std::string& in
     in_params.nChannels = 1;
     unsigned int buffer_frames = kBufferFrames;
 
+    unsigned int rate = pick_rate(in_dev);
     Levels levels;
     if (!open_stream(audio, &out_params, &in_params, &buffer_frames, &thru_callback, &levels,
-                     kSampleRate)) {
+                     rate)) {
         return 1;
     }
 
     // Report what the device actually granted — openStream is allowed to hand
     // back a different buffer size than the one asked for.
-    double block_ms = 1000.0 * buffer_frames / kSampleRate;
-    std::cout << kSampleRate << " Hz, " << buffer_frames << "-frame buffer (" << std::fixed
+    double block_ms = 1000.0 * buffer_frames / rate;
+    std::cout << rate << " Hz, " << buffer_frames << "-frame buffer (" << std::fixed
               << std::setprecision(1) << block_ms << " ms per block, so at least "
               << 2 * block_ms << " ms round trip).\n"
               << "Play. You should hear yourself, unprocessed.";
 
-    float loudest = run_meter(levels, true, kSampleRate);
+    float loudest = run_meter(levels, true, rate);
     close_stream(audio);
 
     if (loudest < 1e-4f) {
@@ -585,8 +607,9 @@ int mode_fx(RtAudio& audio, const std::string& spec, const std::string& effect_n
     // Mixes are pushed well past the musical defaults in main.cpp. This is a
     // go/no-go test, not a tone: the difference has to be obvious on the first
     // note even through cheap headphones.
-    Reverb reverb(static_cast<float>(kSampleRate));
-    Chorus chorus(static_cast<float>(kSampleRate));
+    unsigned int rate = pick_rate(dev);
+    Reverb reverb(static_cast<float>(rate));
+    Chorus chorus(static_cast<float>(rate));
     Distortion distortion;
     Effect* effect = nullptr;
     std::string chosen = effect_name.empty() ? "reverb" : lower(effect_name);
@@ -618,13 +641,13 @@ int mode_fx(RtAudio& audio, const std::string& spec, const std::string& effect_n
     FxState state;
     state.effect = effect;
     if (!open_stream(audio, &out_params, &in_params, &buffer_frames, &fx_callback, &state,
-                     kSampleRate)) {
+                     rate)) {
         return 1;
     }
 
     std::cout << "Play a note and let it ring. It should tail off instead of stopping dead —\n"
                  "that tail is the Pi, not the guitar.";
-    float loudest = run_meter(state.levels, true, kSampleRate);
+    float loudest = run_meter(state.levels, true, rate);
     close_stream(audio);
 
     if (loudest < 1e-4f) {

@@ -7,6 +7,7 @@
 //   ./build/gpio_check led    22      blink an LED on GPIO22
 //   ./build/gpio_check button 17      print each debounced press on GPIO17
 //   ./build/gpio_check clicks 27      classify single vs double clicks
+//   ./build/gpio_check echo 17 22     flash the LED on GPIO22 per press on GPIO17
 //   ./build/gpio_check lcd            write a test pattern to the LCD1602
 //   ./build/gpio_check all            every indicator + both switches at once
 
@@ -40,6 +41,7 @@ void wait_for_ctrl_c() {
 
 int usage() {
     std::cerr << "usage: gpio_check <led|button|clicks> <gpio-line>\n"
+                 "       gpio_check echo <switch-line> <led-line>\n"
                  "       gpio_check <lcd|all>\n";
     return 2;
 }
@@ -71,6 +73,44 @@ int run_button(unsigned int line) {
               << "(floating), or a tactile button is bridging an already-shorted pair.\n";
     wait_for_ctrl_c();
     button.stop();
+    std::cout << "\n" << presses.load() << " press(es) seen.\n";
+    return 0;
+}
+
+// Wiring a switch is a two-person job when the only feedback is a terminal on
+// another machine: someone has to watch the screen while someone else stomps.
+// This closes the loop at the pedal itself -- each debounced press flashes an
+// LED you already proved works, so the switch can be tested standing up.
+int run_echo(unsigned int switch_line, unsigned int led_line) {
+    GpioLed led(kChip, led_line);
+    GpioButton button(kChip, switch_line);
+
+    constexpr auto kFlash = std::chrono::milliseconds(200);
+    std::atomic<int> presses{0};
+    // steady_clock so the flash length is unaffected by wall-clock changes.
+    std::atomic<std::chrono::steady_clock::rep> last_press{0};
+
+    button.start([&]() {
+        last_press.store(std::chrono::steady_clock::now().time_since_epoch().count(),
+                         std::memory_order_relaxed);
+        std::cout << "press #" << presses.fetch_add(1) + 1 << "\n" << std::flush;
+    });
+
+    std::cout << "Watching GPIO" << switch_line << ", flashing GPIO" << led_line
+              << " on each press.\n"
+              << "Stomp the switch -- the LED should blink once per press. Ctrl+C to stop.\n";
+
+    while (!g_stop.load(std::memory_order_relaxed)) {
+        auto since = std::chrono::steady_clock::now().time_since_epoch()
+                     - std::chrono::steady_clock::duration(
+                           last_press.load(std::memory_order_relaxed));
+        bool lit = presses.load(std::memory_order_relaxed) > 0 && since < kFlash;
+        led.set(lit);
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+
+    button.stop();
+    led.set(false);
     std::cout << "\n" << presses.load() << " press(es) seen.\n";
     return 0;
 }
@@ -179,6 +219,13 @@ int main(int argc, char** argv) {
         }
         if (mode == "clicks") {
             return run_clicks(line);
+        }
+        if (mode == "echo") {
+            if (argc < 4) {
+                return usage();
+            }
+            const auto led_line = static_cast<unsigned int>(std::strtoul(argv[3], nullptr, 10));
+            return run_echo(line, led_line);
         }
         return usage();
     } catch (const std::exception& e) {

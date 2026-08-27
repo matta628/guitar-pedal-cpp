@@ -22,8 +22,10 @@
 // stays clean enough that a wiring problem still sounds like a wiring problem.
 
 #include <RtAudio.h>
+#include <unistd.h>
 
 #include <algorithm>
+#include <cstdio>
 #include <atomic>
 #include <cctype>
 #include <chrono>
@@ -32,6 +34,7 @@
 #include <cstring>
 #include <iomanip>
 #include <iostream>
+#include <memory>
 #include <string>
 #include <thread>
 #include <vector>
@@ -57,11 +60,16 @@ constexpr unsigned int kBufferFrames = 256;
 std::atomic<bool> g_stop{false};
 void on_sigint(int) { g_stop.store(true, std::memory_order_relaxed); }
 
-// RtAudio probes every backend on construction and prints a warning for each
-// one that will not open. On a headless Pi that is a dozen lines of ALSA, JACK
-// and Pulse noise ahead of the device table, which buries the answer the user
-// actually came for. Warnings are held here and only printed when something
-// fails, at which point they are usually the explanation.
+// RtAudio probes every audio backend from its constructor, and everything that
+// fails to open complains on the way. On a headless Pi that is a dozen lines of
+// ALSA, JACK and Pulse noise printed before the device table — which buries the
+// one answer the tool exists to give.
+//
+// An error callback is not enough to stop it: libasound writes to stderr
+// directly, and RtAudio's own probe runs before any callback is installed. So
+// stderr itself is redirected to a temp file across construction and read back
+// afterwards. The text is kept, not discarded, because when a mode does fail
+// these lines are usually the explanation.
 std::vector<std::string> g_warnings;
 
 void print_warnings() {
@@ -69,6 +77,60 @@ void print_warnings() {
     std::cerr << "\nWhat the audio backends reported while probing:\n";
     for (const std::string& w : g_warnings) std::cerr << "  " << w << "\n";
 }
+
+class StderrCapture {
+public:
+    StderrCapture() {
+        std::fflush(stderr);
+        saved_fd_ = ::dup(STDERR_FILENO);
+        if (saved_fd_ < 0) return;
+        std::snprintf(path_, sizeof(path_), "/tmp/audio_check_probeXXXXXX");
+        tmp_fd_ = ::mkstemp(path_);
+        if (tmp_fd_ < 0) {
+            ::close(saved_fd_);
+            saved_fd_ = -1;
+            return;
+        }
+        ::dup2(tmp_fd_, STDERR_FILENO);
+    }
+
+    ~StderrCapture() { restore(); }
+
+    StderrCapture(const StderrCapture&) = delete;
+    StderrCapture& operator=(const StderrCapture&) = delete;
+
+    void restore() {
+        if (saved_fd_ < 0) return;
+        std::fflush(stderr);
+        ::dup2(saved_fd_, STDERR_FILENO);
+        ::close(saved_fd_);
+        saved_fd_ = -1;
+
+        ::lseek(tmp_fd_, 0, SEEK_SET);
+        std::string all;
+        char buf[512];
+        ssize_t n;
+        while ((n = ::read(tmp_fd_, buf, sizeof(buf))) > 0) {
+            all.append(buf, static_cast<size_t>(n));
+        }
+        ::close(tmp_fd_);
+        ::unlink(path_);
+
+        size_t start = 0;
+        while (start < all.size()) {
+            size_t end = all.find('\n', start);
+            if (end == std::string::npos) end = all.size();
+            std::string one = all.substr(start, end - start);
+            if (!one.empty()) g_warnings.push_back(one);
+            start = end + 1;
+        }
+    }
+
+private:
+    int saved_fd_ = -1;
+    int tmp_fd_ = -1;
+    char path_[64] = {0};
+};
 
 // Written by the audio callback, read by the printing loop. Peaks are stored as
 // raw bits so the callback never blocks and never allocates.
@@ -595,17 +657,25 @@ int main(int argc, char** argv) {
     std::string arg1 = argc > 2 ? argv[2] : "";
     std::string arg2 = argc > 3 ? argv[3] : "";
 
+    // Scoped so stderr is restored before any mode runs — only the constructor's
+    // probe is silenced, never the streaming that follows.
+    std::unique_ptr<RtAudio> audio_ptr;
+    {
+        StderrCapture quiet_probe;
 #if PEDAL_RTAUDIO6
-    RtAudio audio(RtAudio::UNSPECIFIED, [](RtAudioErrorType type, const std::string& text) {
-        if (type == RTAUDIO_WARNING) {
-            g_warnings.push_back(text);
-        } else {
-            std::cerr << text << "\n";
-        }
-    });
+        audio_ptr = std::make_unique<RtAudio>(
+            RtAudio::UNSPECIFIED, [](RtAudioErrorType type, const std::string& text) {
+                if (type == RTAUDIO_WARNING) {
+                    g_warnings.push_back(text);
+                } else {
+                    std::cerr << text << "\n";
+                }
+            });
 #else
-    RtAudio audio;
+        audio_ptr = std::make_unique<RtAudio>();
 #endif
+    }
+    RtAudio& audio = *audio_ptr;
 
     if (mode == "list") return mode_list(audio);
     if (mode == "meter") return mode_meter(audio, arg1);

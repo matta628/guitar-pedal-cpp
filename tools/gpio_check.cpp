@@ -8,6 +8,7 @@
 //   ./build/gpio_check button 17      print each debounced press on GPIO17
 //   ./build/gpio_check clicks 27      classify single vs double clicks
 //   ./build/gpio_check echo 17 22     flash the LED on GPIO22 per press on GPIO17
+//   ./build/gpio_check gestures 17 22 23   single click -> LED22, double -> LED23
 //   ./build/gpio_check lcd            write a test pattern to the LCD1602
 //   ./build/gpio_check all            every indicator + both switches at once
 
@@ -42,6 +43,7 @@ void wait_for_ctrl_c() {
 int usage() {
     std::cerr << "usage: gpio_check <led|button|clicks> <gpio-line>\n"
                  "       gpio_check echo <switch-line> <led-line>\n"
+                 "       gpio_check gestures <switch-line> <single-led> <double-led>\n"
                  "       gpio_check <lcd|all>\n";
     return 2;
 }
@@ -77,22 +79,50 @@ int run_button(unsigned int line) {
     return 0;
 }
 
+// Lights an LED for a fixed window after each poke(). The timestamp is written
+// from a callback and read by the caller's loop rather than sleeping inside the
+// callback -- a sleep there would block GpioButton's poll thread and swallow a
+// fast second stomp, which is exactly the event the click detector exists to see.
+class LedFlash {
+public:
+    LedFlash(const std::string& chip, unsigned int line) : led_(chip, line) {}
+
+    void poke() {
+        stamp_.store(std::chrono::steady_clock::now().time_since_epoch().count(),
+                     std::memory_order_relaxed);
+        fired_.store(true, std::memory_order_relaxed);
+    }
+
+    void update(std::chrono::steady_clock::duration hold) {
+        if (!fired_.load(std::memory_order_relaxed)) {
+            led_.set(false);
+            return;
+        }
+        auto since = std::chrono::steady_clock::now().time_since_epoch()
+                     - std::chrono::steady_clock::duration(
+                           stamp_.load(std::memory_order_relaxed));
+        led_.set(since < hold);
+    }
+
+    void off() { led_.set(false); }
+
+private:
+    GpioLed led_;
+    std::atomic<std::chrono::steady_clock::rep> stamp_{0};
+    std::atomic<bool> fired_{false};
+};
+
 // Wiring a switch is a two-person job when the only feedback is a terminal on
 // another machine: someone has to watch the screen while someone else stomps.
 // This closes the loop at the pedal itself -- each debounced press flashes an
 // LED you already proved works, so the switch can be tested standing up.
 int run_echo(unsigned int switch_line, unsigned int led_line) {
-    GpioLed led(kChip, led_line);
+    LedFlash flash(kChip, led_line);
     GpioButton button(kChip, switch_line);
-
-    constexpr auto kFlash = std::chrono::milliseconds(200);
     std::atomic<int> presses{0};
-    // steady_clock so the flash length is unaffected by wall-clock changes.
-    std::atomic<std::chrono::steady_clock::rep> last_press{0};
 
     button.start([&]() {
-        last_press.store(std::chrono::steady_clock::now().time_since_epoch().count(),
-                         std::memory_order_relaxed);
+        flash.poke();
         std::cout << "press #" << presses.fetch_add(1) + 1 << "\n" << std::flush;
     });
 
@@ -101,17 +131,58 @@ int run_echo(unsigned int switch_line, unsigned int led_line) {
               << "Stomp the switch -- the LED should blink once per press. Ctrl+C to stop.\n";
 
     while (!g_stop.load(std::memory_order_relaxed)) {
-        auto since = std::chrono::steady_clock::now().time_since_epoch()
-                     - std::chrono::steady_clock::duration(
-                           last_press.load(std::memory_order_relaxed));
-        bool lit = presses.load(std::memory_order_relaxed) > 0 && since < kFlash;
-        led.set(lit);
+        flash.update(std::chrono::milliseconds(200));
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
 
     button.stop();
-    led.set(false);
+    flash.off();
     std::cout << "\n" << presses.load() << " press(es) seen.\n";
+    return 0;
+}
+
+// The same idea one level up: instead of raw presses, show what the gesture
+// layer decided. Watching two LEDs makes the asymmetry obvious by feel -- the
+// single-click light is always late, because it cannot fire until the
+// double-click window has closed and ruled a second stomp out.
+int run_gestures(unsigned int switch_line, unsigned int single_led, unsigned int double_led) {
+    LedFlash single(kChip, single_led);
+    LedFlash dbl(kChip, double_led);
+    std::atomic<int> singles{0};
+    std::atomic<int> doubles{0};
+
+    ClickDetector clicks;
+    clicks.set_handlers(
+        [&]() {
+            single.poke();
+            std::cout << "SINGLE #" << singles.fetch_add(1) + 1 << "  -> would clear the loop\n"
+                      << std::flush;
+        },
+        [&]() {
+            dbl.poke();
+            std::cout << "DOUBLE #" << doubles.fetch_add(1) + 1 << "  -> would cycle the preset\n"
+                      << std::flush;
+        });
+
+    GpioButton button(kChip, switch_line);
+    button.start([&clicks]() { clicks.on_press(std::chrono::steady_clock::now()); },
+                 [&clicks]() { clicks.poll(std::chrono::steady_clock::now()); });
+
+    std::cout << "Watching GPIO" << switch_line << " for gestures.\n"
+              << "  one stomp   -> GPIO" << single_led << " flashes, ~350 ms late\n"
+              << "  two stomps  -> GPIO" << double_led << " flashes, immediately\n"
+              << "Ctrl+C to stop.\n";
+
+    while (!g_stop.load(std::memory_order_relaxed)) {
+        single.update(std::chrono::milliseconds(400));
+        dbl.update(std::chrono::milliseconds(400));
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+
+    button.stop();
+    single.off();
+    dbl.off();
+    std::cout << "\n" << singles.load() << " single, " << doubles.load() << " double.\n";
     return 0;
 }
 
@@ -226,6 +297,14 @@ int main(int argc, char** argv) {
             }
             const auto led_line = static_cast<unsigned int>(std::strtoul(argv[3], nullptr, 10));
             return run_echo(line, led_line);
+        }
+        if (mode == "gestures") {
+            if (argc < 5) {
+                return usage();
+            }
+            const auto single_led = static_cast<unsigned int>(std::strtoul(argv[3], nullptr, 10));
+            const auto double_led = static_cast<unsigned int>(std::strtoul(argv[4], nullptr, 10));
+            return run_gestures(line, single_led, double_led);
         }
         return usage();
     } catch (const std::exception& e) {

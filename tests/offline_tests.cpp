@@ -1,5 +1,8 @@
+#include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdio>
+#include <thread>
 #include <vector>
 
 #include "Chorus.h"
@@ -9,6 +12,7 @@
 #include "LedPattern.h"
 #include "Looper.h"
 #include "Reverb.h"
+#include "Telemetry.h"
 
 namespace {
 
@@ -287,6 +291,109 @@ void test_led_pattern_burst_overrides_then_releases() {
           "LedPattern: the solid base returns once the burst finishes");
 }
 
+// ------------------------------------------------------------------ telemetry
+
+void test_telemetry_levels_and_timing() {
+    Telemetry t;
+    t.configure(48000.0f, 256);
+
+    std::vector<float> in(256, 0.5f);
+    std::vector<float> out(256, 0.25f);
+    // One block is not enough for the RMS average to settle, so drive it for
+    // about a second of audio and check it converges on the true value.
+    for (int i = 0; i < 200; ++i) {
+        t.record_block(in.data(), out.data(), in.size(), std::chrono::microseconds(400));
+    }
+
+    const Telemetry::Snapshot s = t.snapshot();
+    check(approx(s.input.peak, 0.5f, 1e-2f), "Telemetry: input peak tracks the signal");
+    check(approx(s.input.rms, 0.5f, 1e-2f), "Telemetry: RMS of a constant converges on it");
+    check(approx(s.output.peak, 0.25f, 1e-2f), "Telemetry: input and output are metered apart");
+    check(s.blocks == 200, "Telemetry: every block is counted");
+    check(approx(s.budget_us, 5333.3f, 1.0f), "Telemetry: budget is frames/rate, not a constant");
+    check(approx(s.block_us_max, 400.0f, 1.0f), "Telemetry: worst-case block time is held");
+}
+
+void test_telemetry_peak_holds_then_decays() {
+    Telemetry t;
+    t.configure(48000.0f, 256);
+    std::vector<float> loud(256, 0.9f);
+    std::vector<float> quiet(256, 0.0f);
+
+    t.record_block(loud.data(), loud.data(), loud.size(), std::chrono::microseconds(100));
+    const float immediately = t.snapshot().input.peak;
+
+    // One block later the transient is long gone from the signal, but the meter
+    // must still show it — otherwise a plucked note lands between UI frames and
+    // is never seen.
+    t.record_block(quiet.data(), quiet.data(), quiet.size(), std::chrono::microseconds(100));
+    const float one_block_later = t.snapshot().input.peak;
+
+    for (int i = 0; i < 400; ++i) {  // ~2 s of silence
+        t.record_block(quiet.data(), quiet.data(), quiet.size(), std::chrono::microseconds(100));
+    }
+    const float much_later = t.snapshot().input.peak;
+
+    check(approx(immediately, 0.9f, 1e-3f), "Telemetry: peak attack is instant");
+    check(one_block_later > 0.85f, "Telemetry: peak survives the block after the transient");
+    check(much_later < 0.01f, "Telemetry: peak eventually releases to silence");
+}
+
+void test_telemetry_counts_clipping_on_the_output_only() {
+    Telemetry t;
+    t.configure(48000.0f, 4);
+    const std::vector<float> hot = {1.0f, -1.0f, 0.5f, 2.0f};
+    const std::vector<float> cold(4, 0.1f);
+
+    t.record_block(hot.data(), cold.data(), 4, std::chrono::microseconds(10));
+    check(t.snapshot().clips == 0, "Telemetry: a hot input alone is not a clip");
+
+    t.record_block(cold.data(), hot.data(), 4, std::chrono::microseconds(10));
+    check(t.snapshot().clips == 3, "Telemetry: every full-scale output sample is counted");
+}
+
+void test_telemetry_scope_is_never_torn() {
+    Telemetry t;
+    t.configure(48000.0f, 256);
+
+    // The reader must only ever see a window the writer finished. A torn read
+    // would mix two different constants into one buffer, so filling each window
+    // with a single value makes tearing detectable rather than merely unlikely.
+    std::atomic<bool> stop{false};
+    std::atomic<int> torn{0};
+    std::atomic<int> reads{0};
+
+    std::thread reader([&]() {
+        std::vector<float> in(Telemetry::kScopeSamples);
+        std::vector<float> out(Telemetry::kScopeSamples);
+        while (!stop.load(std::memory_order_relaxed)) {
+            if (!t.read_scope(in.data(), out.data())) continue;
+            reads.fetch_add(1, std::memory_order_relaxed);
+            for (std::size_t i = 1; i < in.size(); ++i) {
+                if (in[i] != in[0] || out[i] != out[0]) {
+                    torn.fetch_add(1, std::memory_order_relaxed);
+                    break;
+                }
+            }
+        }
+    });
+
+    std::vector<float> block(256);
+    for (int window = 0; window < 400; ++window) {
+        const float value = static_cast<float>(window);
+        std::fill(block.begin(), block.end(), value);
+        // Exactly one full window per iteration: 8 blocks of 256 = 2048.
+        for (int b = 0; b < 8; ++b) {
+            t.record_block(block.data(), block.data(), block.size(), std::chrono::microseconds(50));
+        }
+    }
+    stop.store(true, std::memory_order_relaxed);
+    reader.join();
+
+    check(reads.load() > 0, "Telemetry: the scope reader saw at least one window");
+    check(torn.load() == 0, "Telemetry: the seqlock never hands out a torn scope window");
+}
+
 }  // namespace
 
 int main() {
@@ -302,6 +409,10 @@ int main() {
     test_click_detector_single_and_double();
     test_led_pattern_base_modes();
     test_led_pattern_burst_overrides_then_releases();
+    test_telemetry_levels_and_timing();
+    test_telemetry_peak_holds_then_decays();
+    test_telemetry_counts_clipping_on_the_output_only();
+    test_telemetry_scope_is_never_torn();
 
     if (g_failures > 0) {
         std::printf("\n%d test(s) failed\n", g_failures);

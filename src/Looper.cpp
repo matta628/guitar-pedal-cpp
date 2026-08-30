@@ -64,4 +64,8 @@ void Looper::process(float* buffer, std::size_t n_frames) {
     }
 
     published_state_.store(state_, std::memory_order_relaxed);
+    published_length_.store(state_ == State::Recording ? write_index_ : loop_length_,
+                            std::memory_order_relaxed);
+    published_position_.store(state_ == State::Recording ? write_index_ : read_index_,
+                              std::memory_order_relaxed);
 }

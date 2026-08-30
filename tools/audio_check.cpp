@@ -41,23 +41,12 @@
 
 #include "Chorus.h"
 #include "Distortion.h"
+#include "AudioDevice.h"
 #include "Effect.h"
 #include "Reverb.h"
 
-// RtAudio 6 replaced the throwing API with returned error codes and swapped
-// device indices for stable ids. Debian trixie ships 6.x; older boards may not.
-#if defined(RTAUDIO_VERSION_MAJOR) && RTAUDIO_VERSION_MAJOR >= 6
-#define PEDAL_RTAUDIO6 1
-#else
-#define PEDAL_RTAUDIO6 0
-#endif
-
 namespace {
 
-// Preferred, not required. The Fender Mustang Micro, for one, advertises 44100
-// and nothing else, so a hardcoded 48000 fails to open a device that works
-// perfectly well — a driver problem dressed up as a hardware problem.
-constexpr unsigned int kPreferredRate = 48000;
 constexpr unsigned int kBufferFrames = 256;
 
 std::atomic<bool> g_stop{false};
@@ -159,143 +148,35 @@ float block_peak(const float* buf, unsigned int n) {
     return peak;
 }
 
+// Device enumeration and rate negotiation are shared with guitar_pedal — both
+// need the same answers, and getting them wrong looks like broken hardware.
+// Only the error reporting differs, so these two shims put it back on stderr
+// where the rest of this tool's diagnostics live.
+using audiodev::Device;
+using audiodev::enumerate;
+using audiodev::guess_device;
+using audiodev::kPreferredRate;
+using audiodev::pick_rate;
+
+bool resolve(const std::vector<Device>& devices, const std::string& spec, bool need_input,
+             Device* out) {
+    std::string error;
+    if (audiodev::resolve(devices, spec, need_input, out, &error)) return true;
+    std::cerr << error << "\n";
+    return false;
+}
+
+bool pick_shared_rate(const Device& in_dev, const Device& out_dev, unsigned int* rate) {
+    std::string error;
+    if (audiodev::pick_shared_rate(in_dev, out_dev, rate, &error)) return true;
+    std::cerr << error << "\n";
+    return false;
+}
+
 std::string lower(std::string s) {
     std::transform(s.begin(), s.end(), s.begin(),
                    [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
     return s;
-}
-
-// ---------------------------------------------------------------- device list
-
-struct Device {
-    unsigned int id;
-    std::string name;
-    unsigned int in_channels;
-    unsigned int out_channels;
-    unsigned int preferred_rate;
-    bool default_in;
-    bool default_out;
-    std::vector<unsigned int> rates;
-};
-
-std::vector<Device> enumerate(RtAudio& audio) {
-    std::vector<Device> out;
-#if PEDAL_RTAUDIO6
-    for (unsigned int id : audio.getDeviceIds()) {
-        RtAudio::DeviceInfo info = audio.getDeviceInfo(id);
-        out.push_back({id, info.name, info.inputChannels, info.outputChannels,
-                       info.preferredSampleRate, info.isDefaultInput, info.isDefaultOutput,
-                       info.sampleRates});
-    }
-#else
-    unsigned int count = audio.getDeviceCount();
-    for (unsigned int i = 0; i < count; ++i) {
-        RtAudio::DeviceInfo info = audio.getDeviceInfo(i);
-        if (!info.probed) continue;
-        out.push_back({i, info.name, info.inputChannels, info.outputChannels,
-                       info.preferredSampleRate, info.isDefaultInput, info.isDefaultOutput,
-                       info.sampleRates});
-    }
-#endif
-    return out;
-}
-
-// Accepts a numeric id or a case-insensitive substring of the device name.
-// Returns false and explains itself rather than guessing between two matches.
-bool resolve(const std::vector<Device>& devices, const std::string& spec, bool need_input,
-             Device* out) {
-    if (!spec.empty() && spec.find_first_not_of("0123456789") == std::string::npos) {
-        unsigned int want = static_cast<unsigned int>(std::stoul(spec));
-        for (const Device& d : devices) {
-            if (d.id == want) { *out = d; return true; }
-        }
-        std::cerr << "no device with id " << want << " — run `audio_check list`\n";
-        return false;
-    }
-
-    std::vector<const Device*> hits;
-    std::string needle = lower(spec);
-    for (const Device& d : devices) {
-        if (lower(d.name).find(needle) != std::string::npos) hits.push_back(&d);
-    }
-    if (hits.empty()) {
-        std::cerr << "no device name contains \"" << spec << "\" — run `audio_check list`\n";
-        return false;
-    }
-    if (hits.size() > 1) {
-        std::cerr << "\"" << spec << "\" matches " << hits.size() << " devices:\n";
-        for (const Device* d : hits) std::cerr << "  " << d->id << "  " << d->name << "\n";
-        std::cerr << "pass the id instead.\n";
-        return false;
-    }
-    if (need_input && hits[0]->in_channels == 0) {
-        std::cerr << hits[0]->name << " has no input channels.\n";
-        return false;
-    }
-    *out = *hits[0];
-    return true;
-}
-
-// Picks the interface most likely to be the guitar path when no device is named:
-// a duplex USB device beats whatever the system calls "default", which on a Pi
-// is usually HDMI.
-bool guess_device(const std::vector<Device>& devices, bool need_input, bool need_output,
-                  Device* out) {
-    const Device* best = nullptr;
-    for (const Device& d : devices) {
-        if (need_input && d.in_channels == 0) continue;
-        if (need_output && d.out_channels == 0) continue;
-        bool duplex = d.in_channels > 0 && d.out_channels > 0;
-        if (best == nullptr) { best = &d; continue; }
-        bool best_duplex = best->in_channels > 0 && best->out_channels > 0;
-        if (duplex && !best_duplex) best = &d;
-    }
-    if (best == nullptr) return false;
-    *out = *best;
-    return true;
-}
-
-// Devices advertise a rate list; honour it rather than insisting on 48k.
-unsigned int pick_rate(const Device& d) {
-    for (unsigned int r : d.rates) {
-        if (r == kPreferredRate) return r;
-    }
-    if (d.preferred_rate > 0) return d.preferred_rate;
-    if (!d.rates.empty()) return d.rates.front();
-    return kPreferredRate;
-}
-
-// Two different devices must agree on ONE rate: an RtAudio duplex stream has a
-// single sampleRate for both directions. A capture-only device that offers just
-// 44100 and a headset that offers just 48000 have no intersection, and the
-// failure is openStream refusing outright, not a glitch — so it is worth saying
-// so plainly instead of letting a driver error explain it.
-bool pick_shared_rate(const Device& in_dev, const Device& out_dev, unsigned int* rate) {
-    if (in_dev.id == out_dev.id) {
-        *rate = pick_rate(in_dev);
-        return true;
-    }
-    std::vector<unsigned int> shared;
-    for (unsigned int r : in_dev.rates) {
-        if (std::find(out_dev.rates.begin(), out_dev.rates.end(), r) != out_dev.rates.end()) {
-            shared.push_back(r);
-        }
-    }
-    if (shared.empty()) {
-        std::cerr << "These two devices share no sample rate, so one stream cannot drive both.\n"
-                  << "  " << in_dev.name << " offers:";
-        for (unsigned int r : in_dev.rates) std::cerr << " " << r;
-        std::cerr << "\n  " << out_dev.name << " offers:";
-        for (unsigned int r : out_dev.rates) std::cerr << " " << r;
-        std::cerr << "\n\nThis is not fixable by picking a different buffer size. Either use one\n"
-                     "device for both directions, or use an output device that offers a rate the\n"
-                     "input device also supports.\n";
-        return false;
-    }
-    *rate = std::find(shared.begin(), shared.end(), kPreferredRate) != shared.end()
-                ? kPreferredRate
-                : shared.front();
-    return true;
 }
 
 void print_devices(const std::vector<Device>& devices) {

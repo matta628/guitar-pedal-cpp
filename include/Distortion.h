@@ -9,6 +9,11 @@ public:
     void set_drive(float drive);
     void set_mix(float mix);
 
+    // Readable from any thread, same as the setters. The web UI needs the
+    // current value to draw a slider in the right place at page load.
+    float drive() const { return drive_.load(std::memory_order_relaxed); }
+    float mix() const { return mix_.load(std::memory_order_relaxed); }
+
     void process(float* buffer, std::size_t n_frames) override;
 
 private:

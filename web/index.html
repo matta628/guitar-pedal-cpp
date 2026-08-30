@@ -1,0 +1,493 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>guitar-pedal-cpp — bench</title>
+<style>
+  :root {
+    --bg: #0d1014;
+    --panel: #161b22;
+    --panel-2: #1c232c;
+    --line: #2a323d;
+    --text: #d7dee7;
+    --dim: #7d8894;
+    --accent: #6ee7b7;
+    --accent-2: #60a5fa;
+    --warn: #fbbf24;
+    --bad: #f87171;
+    --mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 13px/1.5 var(--mono);
+  }
+  header {
+    display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+    padding: 12px 18px; border-bottom: 1px solid var(--line); background: var(--panel);
+    position: sticky; top: 0; z-index: 5;
+  }
+  header h1 { font-size: 14px; margin: 0; letter-spacing: .04em; }
+  .spacer { flex: 1; }
+  .pill {
+    padding: 2px 9px; border-radius: 999px; border: 1px solid var(--line);
+    color: var(--dim); font-size: 11px; white-space: nowrap;
+  }
+  .pill.ok { color: var(--accent); border-color: #1f4d3d; background: #0f2a22; }
+  .pill.bad { color: var(--bad); border-color: #4d2020; background: #2a1212; }
+  .pill.warn { color: var(--warn); border-color: #4d3f18; background: #2a2311; }
+
+  main {
+    display: grid; gap: 14px; padding: 14px 18px 40px;
+    grid-template-columns: repeat(auto-fit, minmax(330px, 1fr));
+    align-items: start;
+  }
+  section {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+    padding: 12px 14px 14px;
+  }
+  section.wide { grid-column: 1 / -1; }
+  h2 {
+    margin: 0 0 10px; font-size: 11px; letter-spacing: .12em; text-transform: uppercase;
+    color: var(--dim); font-weight: 600;
+  }
+
+  button {
+    font: inherit; color: var(--text); background: var(--panel-2);
+    border: 1px solid var(--line); border-radius: 6px; padding: 7px 12px; cursor: pointer;
+  }
+  button:hover { border-color: #3d4855; }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  button.on { background: #123027; border-color: #2f6b56; color: var(--accent); }
+  button.big { padding: 11px 16px; font-size: 14px; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; }
+
+  .kv { display: grid; grid-template-columns: auto 1fr; gap: 3px 12px; font-size: 12px; }
+  .kv dt { color: var(--dim); }
+  .kv dd { margin: 0; text-align: right; }
+
+  .meter { margin-bottom: 12px; }
+  .meter-head {
+    display: flex; justify-content: space-between; font-size: 11px; color: var(--dim);
+    margin-bottom: 4px;
+  }
+  .meter-head b { color: var(--text); font-weight: 500; }
+  .bar {
+    position: relative; height: 16px; background: #0b0e12;
+    border: 1px solid var(--line); border-radius: 3px; overflow: hidden;
+  }
+  .bar .rms, .bar .peak { position: absolute; top: 0; bottom: 0; left: 0; }
+  .bar .rms { background: #1d4f6b; }
+  .bar .peak { width: 2px; background: var(--accent); }
+  .bar .ticks {
+    position: absolute; inset: 0;
+    background-image: repeating-linear-gradient(to right, transparent 0 calc(16.666% - 1px), #2a323d calc(16.666% - 1px) 16.666%);
+  }
+  .scale { display: flex; justify-content: space-between; font-size: 10px; color: #5b6672; margin-top: 2px; }
+
+  canvas { width: 100%; height: 190px; display: block; background: #0b0e12;
+           border: 1px solid var(--line); border-radius: 4px; }
+
+  .loop-bar { height: 22px; background: #0b0e12; border: 1px solid var(--line);
+              border-radius: 3px; position: relative; overflow: hidden; margin: 10px 0 6px; }
+  .loop-bar .fill { position: absolute; inset: 0 auto 0 0; background: #123027; }
+  .loop-bar .head { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--accent); }
+  .state-badge {
+    display: inline-block; padding: 6px 14px; border-radius: 6px; font-size: 15px;
+    letter-spacing: .1em; border: 1px solid var(--line); background: var(--panel-2);
+  }
+  .state-EMPTY { color: var(--dim); }
+  .state-REC { color: var(--bad); border-color: #4d2020; background: #2a1212; }
+  .state-PLAY { color: var(--accent); border-color: #1f4d3d; background: #0f2a22; }
+  .state-OVERDUB { color: var(--warn); border-color: #4d3f18; background: #2a2311; }
+
+  .param { display: grid; grid-template-columns: 92px 1fr 52px; gap: 10px;
+           align-items: center; margin: 6px 0; }
+  .param label { color: var(--dim); font-size: 12px; }
+  .param output { text-align: right; font-size: 12px; }
+  .group-title { font-size: 11px; color: var(--accent-2); margin: 12px 0 2px; letter-spacing: .08em; }
+  .group-title:first-child { margin-top: 0; }
+  input[type=range] { width: 100%; accent-color: #3f8f74; }
+
+  .lcd {
+    background: #0e2a12; color: #7dfb8a; border: 2px solid #23361f; border-radius: 4px;
+    padding: 8px 10px; font-size: 15px; letter-spacing: .16em; white-space: pre;
+    text-shadow: 0 0 6px rgba(125,251,138,.35);
+  }
+  .log { max-height: 210px; overflow-y: auto; font-size: 12px; }
+  .log div { padding: 1px 0; border-bottom: 1px solid #1b212a; }
+  .log time { color: #5b6672; margin-right: 8px; }
+  .muted { color: var(--dim); }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>guitar-pedal-cpp</h1>
+  <span id="conn" class="pill">connecting</span>
+  <span id="audio" class="pill">audio ?</span>
+  <span id="fmt" class="pill">-</span>
+  <span class="spacer"></span>
+  <span id="xruns" class="pill">xruns 0</span>
+  <span id="load" class="pill">load -</span>
+</header>
+
+<main>
+
+  <section>
+    <h2>Effect</h2>
+    <div class="row" id="presets"></div>
+    <p class="muted" id="preset-hint" style="margin:10px 0 0;font-size:11px">
+      Same index the utility footswitch cycles through.
+    </p>
+  </section>
+
+  <section>
+    <h2>Looper</h2>
+    <span id="loop-state" class="state-badge state-EMPTY">EMPTY</span>
+    <div class="loop-bar"><div class="fill" id="loop-fill"></div><div class="head" id="loop-head"></div></div>
+    <div class="scale"><span id="loop-pos">0.00 s</span><span id="loop-len">no loop</span></div>
+    <div class="row" style="margin-top:10px">
+      <button class="big" id="btn-trigger">Trigger</button>
+      <button class="big" id="btn-clear">Clear</button>
+    </div>
+    <p class="muted" style="margin:8px 0 0;font-size:11px">
+      Trigger drives the same state machine as the looper footswitch:
+      empty &rarr; record &rarr; play &rarr; overdub &rarr; play.
+    </p>
+  </section>
+
+  <section>
+    <h2>Levels</h2>
+    <div class="meter">
+      <div class="meter-head"><span>Input <span class="muted">(guitar in)</span></span>
+        <span><b id="in-peak-db">-inf</b> peak / <span id="in-rms-db">-inf</span> rms dBFS</span></div>
+      <div class="bar"><div class="rms" id="in-rms"></div><div class="peak" id="in-peak"></div><div class="ticks"></div></div>
+    </div>
+    <div class="meter">
+      <div class="meter-head"><span>Output <span class="muted">(post-DSP)</span></span>
+        <span><b id="out-peak-db">-inf</b> peak / <span id="out-rms-db">-inf</span> rms dBFS</span></div>
+      <div class="bar"><div class="rms" id="out-rms"></div><div class="peak" id="out-peak"></div><div class="ticks"></div></div>
+    </div>
+    <div class="scale"><span>-60</span><span>-50</span><span>-40</span><span>-30</span><span>-20</span><span>-10</span><span>0 dB</span></div>
+    <div class="row" style="margin-top:10px">
+      <span id="clips" class="pill">clips 0</span>
+      <button id="btn-reset">Reset counters</button>
+      <button id="btn-sim">Simulate input</button>
+    </div>
+  </section>
+
+  <section class="wide">
+    <h2>Waveform &mdash; <span class="muted">dim = input, bright = output</span></h2>
+    <canvas id="scope"></canvas>
+  </section>
+
+  <section>
+    <h2>Deadline</h2>
+    <div class="meter">
+      <div class="meter-head"><span>Callback time vs. budget</span><span><b id="pct">-</b></span></div>
+      <div class="bar"><div class="rms" id="load-avg"></div><div class="peak" id="load-max"></div><div class="ticks"></div></div>
+    </div>
+    <dl class="kv">
+      <dt>budget / buffer</dt><dd id="budget">-</dd>
+      <dt>last</dt><dd id="us-last">-</dd>
+      <dt>average</dt><dd id="us-avg">-</dd>
+      <dt>worst</dt><dd id="us-max">-</dd>
+      <dt>buffers processed</dt><dd id="blocks">0</dd>
+      <dt>xruns</dt><dd id="xruns2">0</dd>
+    </dl>
+  </section>
+
+  <section>
+    <h2>Parameters</h2>
+    <div id="params"></div>
+  </section>
+
+  <section>
+    <h2>Control surface</h2>
+    <div class="lcd"><span id="lcd0">                </span><br><span id="lcd1">                </span></div>
+    <div class="row" style="margin-top:10px">
+      <span class="pill" id="gp-looper">looper switch</span>
+      <span class="pill" id="gp-util">utility switch</span>
+      <span class="pill" id="gp-leds">LEDs</span>
+      <span class="pill" id="gp-lcd">LCD1602</span>
+    </div>
+    <dl class="kv" style="margin-top:10px">
+      <dt>input device</dt><dd id="dev-in">-</dd>
+      <dt>output device</dt><dd id="dev-out">-</dd>
+    </dl>
+  </section>
+
+  <section class="wide">
+    <h2>Event log</h2>
+    <div class="log" id="log"></div>
+  </section>
+
+</main>
+
+<script>
+"use strict";
+
+const $ = (id) => document.getElementById(id);
+const DB_FLOOR = -60;
+
+function toDb(x) {
+  if (!(x > 0)) return -Infinity;
+  return 20 * Math.log10(x);
+}
+function dbText(x) {
+  const d = toDb(x);
+  return d === -Infinity ? "-inf" : d.toFixed(1);
+}
+// Meters are drawn on a dB scale, not a linear one: linear spends 90% of its
+// width on the top 20 dB, which is exactly where a guitar signal never sits.
+function dbFraction(x) {
+  const d = toDb(x);
+  if (!(d > DB_FLOOR)) return 0;
+  return Math.min(1, (d - DB_FLOOR) / (0 - DB_FLOOR));
+}
+
+let cfg = null;
+let scopePoints = 512;
+let dragging = null;      // param id the user is currently holding
+const seenLog = new Set();
+let sim = false;
+
+async function post(path, params) {
+  const q = new URLSearchParams(params || {}).toString();
+  try {
+    await fetch(path + (q ? "?" + q : ""), { method: "POST" });
+  } catch (e) { /* the stream's disconnect indicator already says it */ }
+}
+
+async function loadConfig() {
+  cfg = await (await fetch("/api/params")).json();
+  scopePoints = cfg.scope_points || 512;
+
+  $("fmt").textContent = cfg.sample_rate + " Hz / " + cfg.buffer_frames + " frames";
+  $("dev-in").textContent = cfg.device_in || "-";
+  $("dev-out").textContent = cfg.device_out || "-";
+
+  const holder = $("presets");
+  holder.innerHTML = "";
+  cfg.presets.forEach((name, i) => {
+    const b = document.createElement("button");
+    b.textContent = name;
+    b.dataset.preset = String(i);
+    b.onclick = () => post("/api/preset", { value: i });
+    holder.appendChild(b);
+  });
+
+  const box = $("params");
+  box.innerHTML = "";
+  let group = null;
+  for (const p of cfg.params) {
+    if (p.group !== group) {
+      group = p.group;
+      const h = document.createElement("div");
+      h.className = "group-title";
+      h.textContent = group;
+      box.appendChild(h);
+    }
+    const row = document.createElement("div");
+    row.className = "param";
+    const lab = document.createElement("label");
+    lab.textContent = p.label;
+    const input = document.createElement("input");
+    input.type = "range";
+    input.min = p.min; input.max = p.max; input.step = (p.max - p.min) / 200;
+    input.dataset.id = p.id;
+    const out = document.createElement("output");
+    out.id = "pv-" + p.id;
+    input.addEventListener("pointerdown", () => { dragging = p.id; });
+    input.addEventListener("input", () => {
+      dragging = p.id;
+      out.textContent = Number(input.value).toFixed(2);
+      post("/api/param", { id: p.id, value: input.value });
+    });
+    input.addEventListener("blur", () => { if (dragging === p.id) dragging = null; });
+    lab.htmlFor = input.id = "pi-" + p.id;
+    row.append(lab, input, out);
+    box.appendChild(row);
+  }
+}
+
+function setPill(el, on, label) {
+  el.className = "pill " + (on ? "ok" : "");
+  el.textContent = label;
+}
+
+function render(s) {
+  document.querySelectorAll("#presets button").forEach((b) => {
+    b.classList.toggle("on", Number(b.dataset.preset) === s.preset);
+  });
+
+  const badge = $("loop-state");
+  badge.textContent = s.looper;
+  badge.className = "state-badge state-" + s.looper;
+
+  const sr = (cfg && cfg.sample_rate) || 48000;
+  const lenSec = s.loop_frames / sr;
+  const frac = s.loop_frames > 0 ? s.loop_position / s.loop_frames : 0;
+  $("loop-fill").style.width = (s.loop_frames > 0 ? 100 : 0) + "%";
+  $("loop-head").style.left = (frac * 100) + "%";
+  $("loop-pos").textContent = (s.loop_position / sr).toFixed(2) + " s";
+  $("loop-len").textContent = s.loop_frames > 0 ? lenSec.toFixed(2) + " s loop" : "no loop";
+
+  $("in-rms").style.width = (dbFraction(s.in.rms) * 100) + "%";
+  $("in-peak").style.left = (dbFraction(s.in.peak) * 100) + "%";
+  $("out-rms").style.width = (dbFraction(s.out.rms) * 100) + "%";
+  $("out-peak").style.left = (dbFraction(s.out.peak) * 100) + "%";
+  $("in-peak-db").textContent = dbText(s.in.peak);
+  $("in-rms-db").textContent = dbText(s.in.rms);
+  $("out-peak-db").textContent = dbText(s.out.peak);
+  $("out-rms-db").textContent = dbText(s.out.rms);
+
+  const clipEl = $("clips");
+  clipEl.textContent = "clips " + s.clips;
+  clipEl.className = "pill " + (s.clips > 0 ? "bad" : "");
+
+  const b = s.block_us;
+  const pct = b.budget > 0 ? (b.avg / b.budget) * 100 : 0;
+  const pctMax = b.budget > 0 ? (b.max / b.budget) * 100 : 0;
+  $("pct").textContent = pct.toFixed(1) + "% avg / " + pctMax.toFixed(1) + "% worst";
+  $("load-avg").style.width = Math.min(100, pct) + "%";
+  $("load-max").style.left = Math.min(100, pctMax) + "%";
+  $("budget").textContent = b.budget.toFixed(1) + " us";
+  $("us-last").textContent = b.last.toFixed(1) + " us";
+  $("us-avg").textContent = b.avg.toFixed(1) + " us";
+  $("us-max").textContent = b.max.toFixed(1) + " us";
+  $("blocks").textContent = s.blocks.toLocaleString();
+  $("xruns2").textContent = s.xruns;
+
+  const xr = $("xruns");
+  xr.textContent = "xruns " + s.xruns;
+  xr.className = "pill " + (s.xruns > 0 ? "bad" : "ok");
+  const ld = $("load");
+  ld.textContent = "load " + pct.toFixed(0) + "%";
+  ld.className = "pill " + (pctMax > 80 ? "bad" : pctMax > 50 ? "warn" : "ok");
+
+  const au = $("audio");
+  au.textContent = s.audio_running ? "audio running" : ("audio stopped" + (s.audio_status ? ": " + s.audio_status : ""));
+  au.className = "pill " + (s.audio_running ? "ok" : "warn");
+
+  sim = s.simulator;
+  const simBtn = $("btn-sim");
+  simBtn.classList.toggle("on", sim);
+  // The sound card and the generator would both be driving the same chain, so
+  // only one of them is ever allowed to.
+  simBtn.disabled = s.audio_running;
+  simBtn.title = s.audio_running ? "Disabled while the sound card is driving the chain" : "";
+  simBtn.textContent = sim ? "Simulating input" : "Simulate input";
+
+  $("lcd0").textContent = (s.lcd[0] + "                ").slice(0, 16);
+  $("lcd1").textContent = (s.lcd[1] + "                ").slice(0, 16);
+  setPill($("gp-looper"), s.gpio.looper_switch, "looper switch");
+  setPill($("gp-util"), s.gpio.utility_switch, "utility switch");
+  setPill($("gp-leds"), s.gpio.leds, "LEDs");
+  setPill($("gp-lcd"), s.gpio.lcd, "LCD1602");
+
+  for (const id in s.params) {
+    if (dragging === id) continue;   // don't yank a slider out from under a drag
+    const input = document.querySelector('input[data-id="' + id + '"]');
+    if (input) input.value = s.params[id];
+    const out = $("pv-" + id);
+    if (out) out.textContent = Number(s.params[id]).toFixed(2);
+  }
+
+  const logBox = $("log");
+  for (const e of s.log) {
+    if (seenLog.has(e.id)) continue;
+    seenLog.add(e.id);
+    const row = document.createElement("div");
+    const t = document.createElement("time");
+    t.textContent = e.t;
+    row.append(t, document.createTextNode(e.m));
+    logBox.prepend(row);
+  }
+  while (logBox.childElementCount > 200) logBox.lastElementChild.remove();
+}
+
+// A release that lands outside the slider still ends the drag, so a stream
+// frame is never blocked from updating a control the user let go of.
+window.addEventListener("pointerup", () => { dragging = null; });
+window.addEventListener("pointercancel", () => { dragging = null; });
+
+// --- scope ---------------------------------------------------------------
+const canvas = $("scope");
+const ctx = canvas.getContext("2d");
+let scopeBusy = false;
+
+function fitCanvas() {
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = Math.round(canvas.clientWidth * dpr);
+  canvas.height = Math.round(canvas.clientHeight * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+window.addEventListener("resize", fitCanvas);
+
+function drawTrace(data, offset, count, w, h, color, width) {
+  ctx.beginPath();
+  for (let i = 0; i < count; i++) {
+    const x = (i / (count - 1)) * w;
+    const y = h / 2 - Math.max(-1.2, Math.min(1.2, data[offset + i])) * (h / 2 - 4);
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  }
+  ctx.strokeStyle = color;
+  ctx.lineWidth = width;
+  ctx.stroke();
+}
+
+async function pollScope() {
+  if (scopeBusy) return;
+  scopeBusy = true;
+  try {
+    const buf = await (await fetch("/api/scope")).arrayBuffer();
+    const w = canvas.clientWidth, h = canvas.clientHeight;
+    ctx.clearRect(0, 0, w, h);
+    ctx.strokeStyle = "#232b35";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(0, h / 2); ctx.lineTo(w, h / 2);
+    ctx.stroke();
+    if (buf.byteLength >= scopePoints * 8) {
+      const f = new Float32Array(buf);
+      drawTrace(f, 0, scopePoints, w, h, "#3f6d8f", 1);
+      drawTrace(f, scopePoints, scopePoints, w, h, "#6ee7b7", 1.4);
+    }
+  } catch (e) { /* ignore a dropped frame */ }
+  scopeBusy = false;
+}
+
+// --- wiring --------------------------------------------------------------
+$("btn-trigger").onclick = () => post("/api/looper", { action: "trigger" });
+$("btn-clear").onclick = () => post("/api/looper", { action: "clear" });
+$("btn-reset").onclick = () => post("/api/reset");
+$("btn-sim").onclick = () => post("/api/sim", { on: sim ? "0" : "1" });
+
+document.addEventListener("keydown", (e) => {
+  if (e.target.tagName === "INPUT") return;
+  if (e.code === "Space") { e.preventDefault(); post("/api/looper", { action: "trigger" }); }
+  if (e.key === "c") post("/api/looper", { action: "clear" });
+  if (e.key >= "1" && e.key <= "9") post("/api/preset", { value: Number(e.key) - 1 });
+});
+
+function connect() {
+  const es = new EventSource("/api/events");
+  es.onopen = () => { const c = $("conn"); c.textContent = "connected"; c.className = "pill ok"; };
+  es.onmessage = (ev) => render(JSON.parse(ev.data));
+  es.onerror = () => {
+    const c = $("conn"); c.textContent = "reconnecting"; c.className = "pill bad";
+    // EventSource retries on its own; this only reports it.
+  };
+}
+
+fitCanvas();
+loadConfig().then(() => {
+  connect();
+  setInterval(pollScope, 66);   // ~15 Hz, pulled rather than pushed
+});
+</script>
+</body>
+</html>

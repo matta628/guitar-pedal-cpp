@@ -13,6 +13,10 @@ public:
     void set_depth_ms(float depth_ms);
     void set_mix(float mix);
 
+    float rate_hz() const { return rate_hz_.load(std::memory_order_relaxed); }
+    float depth_ms() const { return depth_ms_.load(std::memory_order_relaxed); }
+    float mix() const { return mix_.load(std::memory_order_relaxed); }
+
     void process(float* buffer, std::size_t n_frames) override;
 
 private:

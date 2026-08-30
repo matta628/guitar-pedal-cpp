@@ -1,17 +1,25 @@
 #include <RtAudio.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <csignal>
+#include <cstdlib>
+#include <filesystem>
 #include <cstring>
 #include <iostream>
 #include <memory>
+#include <string>
+#include <system_error>
 #include <thread>
+#include <vector>
 
-#include "Chorus.h"
-#include "Distortion.h"
+#include "AudioDevice.h"
 #include "Looper.h"
-#include "Reverb.h"
+#include "Pedalboard.h"
+#include "Telemetry.h"
+#include "WebServer.h"
 
 #ifdef PEDAL_HAVE_GPIO
 #include "ClickDetector.h"
@@ -24,39 +32,13 @@
 namespace {
 
 std::atomic<bool> g_stop{false};
-std::atomic<int> g_xrun_count{0};
+Telemetry g_telemetry;
 
 void on_sigint(int) { g_stop.store(true, std::memory_order_relaxed); }
 
-// Cycled by the utility footswitch. Clean is a real entry, not a bypass flag:
-// the looper runs in every preset, so "no effect" still records and plays back.
-enum class Preset { Shoegaze = 0, Clean, Fuzz, Chorus, Reverb };
-constexpr int kPresetCount = 5;
-
-const char* preset_name(int preset) {
-    switch (static_cast<Preset>(preset)) {
-        case Preset::Shoegaze: return "shoegaze (fuzz + chorus + reverb)";
-        case Preset::Clean:    return "clean (no effect)";
-        case Preset::Fuzz:     return "fuzz";
-        case Preset::Chorus:   return "chorus";
-        case Preset::Reverb:   return "reverb";
-    }
-    return "unknown";
-}
-
-// The LCD has 16 columns, so preset names get a short form of their own
-// rather than being silently truncated by write_line().
-const char* preset_short_name(int preset) {
-    switch (static_cast<Preset>(preset)) {
-        case Preset::Shoegaze: return "SHOEGAZE";
-        case Preset::Clean:    return "CLEAN";
-        case Preset::Fuzz:     return "FUZZ";
-        case Preset::Chorus:   return "CHORUS";
-        case Preset::Reverb:   return "REVERB";
-    }
-    return "?";
-}
-
+// Preset names now come from the pedalboard's table (src/Presets.cpp), not
+// from an enum here. The LCD's second line has ten columns to spare after its
+// "FX:   " label, which is what short_name is sized for.
 const char* looper_state_name(Looper::State state) {
     switch (state) {
         case Looper::State::Empty:       return "EMPTY";
@@ -68,107 +50,306 @@ const char* looper_state_name(Looper::State state) {
 }
 
 struct PedalChain {
-    Distortion distortion;
-    Chorus chorus;
-    Reverb reverb;
+    Pedalboard board;
     Looper looper;
 
-    // Written by the footswitch thread, read by the audio thread every buffer.
-    std::atomic<int> preset{static_cast<int>(Preset::Shoegaze)};
     // Bumped on every clear so the indicator loop can flash an acknowledgement
     // without the click handler touching a LedPattern from another thread.
     std::atomic<unsigned> clear_count{0};
 
-    explicit PedalChain(float sample_rate)
-        : chorus(sample_rate), reverb(sample_rate), looper(sample_rate) {
-        distortion.set_drive(2.5f);
-        distortion.set_mix(0.4f);
-        chorus.set_rate_hz(0.6f);
-        chorus.set_depth_ms(3.0f);
-        chorus.set_mix(0.5f);
-        reverb.set_room_size(0.7f);
-        reverb.set_damping(0.4f);
-        reverb.set_mix(0.4f);
+    explicit PedalChain(float sample_rate) : board(sample_rate), looper(sample_rate) {}
+};
+
+// The whole per-buffer job, factored out so the offline signal generator can
+// drive the identical path the sound card drives. Real-time-safe: no
+// allocation, no locks, no syscalls (steady_clock::now() is a vDSO read).
+void run_block(PedalChain& chain, const float* in, float* out, unsigned int n_frames) {
+    const auto t0 = std::chrono::steady_clock::now();
+
+    if (in != nullptr) {
+        std::memcpy(out, in, n_frames * sizeof(float));
+    } else {
+        std::memset(out, 0, n_frames * sizeof(float));
     }
 
-    int cycle_preset() {
-        const int next = (preset.load(std::memory_order_relaxed) + 1) % kPresetCount;
-        preset.store(next, std::memory_order_relaxed);
-        return next;
-    }
-};
+    chain.board.process(out, n_frames);
+
+    // After the pedalboard, not inside it: the looper records what you would
+    // hear, and keeps running even on the clean preset.
+    chain.looper.process(out, n_frames);
+
+    g_telemetry.record_block(in, out, n_frames, std::chrono::steady_clock::now() - t0);
+}
 
 int audio_callback(void* output_buffer, void* input_buffer, unsigned int n_frames,
                    double /*stream_time*/, RtAudioStreamStatus status, void* user_data) {
-    if (status) {
-        g_xrun_count.fetch_add(1, std::memory_order_relaxed);
-    }
-    std::memcpy(output_buffer, input_buffer, n_frames * sizeof(float));
-
-    auto* chain = static_cast<PedalChain*>(user_data);
-    auto* out = static_cast<float*>(output_buffer);
-
-    switch (static_cast<Preset>(chain->preset.load(std::memory_order_relaxed))) {
-        case Preset::Shoegaze:
-            chain->distortion.process(out, n_frames);
-            chain->chorus.process(out, n_frames);
-            chain->reverb.process(out, n_frames);
-            break;
-        case Preset::Clean:
-            break;
-        case Preset::Fuzz:
-            chain->distortion.process(out, n_frames);
-            break;
-        case Preset::Chorus:
-            chain->chorus.process(out, n_frames);
-            break;
-        case Preset::Reverb:
-            chain->reverb.process(out, n_frames);
-            break;
-    }
-
-    // Outside the switch on purpose: the looper sits after whatever the preset
-    // selected, and keeps running even on the clean preset.
-    chain->looper.process(out, n_frames);
-
+    if (status) g_telemetry.note_xrun();
+    run_block(*static_cast<PedalChain*>(user_data), static_cast<const float*>(input_buffer),
+              static_cast<float*>(output_buffer), n_frames);
     return 0;
+}
+
+// RtAudio 6 returns an error code where RtAudio 5 throws. Funnelled here so the
+// caller reads the same either way — and so a failed open is actually noticed:
+// a try/catch alone silently "succeeds" against RtAudio 6.
+bool open_stream(RtAudio& audio, RtAudio::StreamParameters* out_params,
+                 RtAudio::StreamParameters* in_params, unsigned int* buffer_frames,
+                 unsigned int rate, void* user_data, std::string* error) {
+#if PEDAL_RTAUDIO6
+    if (audio.openStream(out_params, in_params, RTAUDIO_FLOAT32, rate, buffer_frames,
+                         &audio_callback, user_data) != RTAUDIO_NO_ERROR) {
+        *error = audio.getErrorText();
+        return false;
+    }
+    if (audio.startStream() != RTAUDIO_NO_ERROR) {
+        *error = audio.getErrorText();
+        return false;
+    }
+    return true;
+#else
+    try {
+        audio.openStream(out_params, in_params, RTAUDIO_FLOAT32, rate, buffer_frames,
+                         &audio_callback, user_data);
+        audio.startStream();
+        return true;
+    } catch (const std::exception& e) {
+        *error = e.what();
+        return false;
+    }
+#endif
+}
+
+// ---------------------------------------------------------------- signal source
+
+// A stand-in guitar, for working on the UI or the looper with no interface
+// plugged in. Not a test oscillator: a decaying harmonic stack retriggered on a
+// pentatonic walk, because a steady sine makes every meter, scope and loop look
+// correct whether or not it is.
+class SignalGenerator {
+public:
+    explicit SignalGenerator(float sample_rate) : sample_rate_(sample_rate) {}
+
+    void fill(float* out, unsigned int n_frames) {
+        static constexpr float kNotes[] = {82.41f, 110.0f, 146.83f, 196.0f, 246.94f, 329.63f};
+        for (unsigned int i = 0; i < n_frames; ++i) {
+            if (age_ >= sample_rate_ * 0.9f) {  // new pluck every 900 ms
+                age_ = 0.0f;
+                phase_ = 0.0f;
+                note_ = (note_ + 3) % 6;
+            }
+            const float f = kNotes[note_];
+            const float env = std::exp(-age_ / (sample_rate_ * 0.45f));
+            // Fundamental plus two harmonics, the third rolling off fastest —
+            // roughly how a plucked string actually decays.
+            const float s = std::sin(phase_) + 0.45f * std::sin(2.0f * phase_) * env +
+                            0.22f * std::sin(3.0f * phase_) * env * env;
+            out[i] = 0.35f * env * s;
+            phase_ += 2.0f * 3.14159265f * f / sample_rate_;
+            if (phase_ > 6.2831853f) phase_ -= 6.2831853f;
+            age_ += 1.0f;
+        }
+    }
+
+private:
+    float sample_rate_;
+    float phase_ = 0.0f;
+    float age_ = 1e9f;
+    int note_ = 0;
+};
+
+// --------------------------------------------------------------- command line
+
+struct Options {
+    std::string device;       // input device: numeric id or name substring
+    std::string out_device;   // defaults to the input device
+    unsigned int rate = 0;    // 0 = whatever the device prefers
+    unsigned int frames = 256;
+    std::uint16_t port = 8080;
+    std::string settings;     // empty = the default path under $HOME
+    bool web = true;
+    bool simulate = false;
+    bool list = false;
+};
+
+void print_usage() {
+    std::cout <<
+        "usage: guitar_pedal [options]\n"
+        "  --device <id|name>      capture device (default: first duplex device found)\n"
+        "  --out-device <id|name>  playback device (default: same as --device)\n"
+        "  --rate <hz>             sample rate (default: whatever the device prefers)\n"
+        "  --frames <n>            buffer size in frames (default 256)\n"
+        "  --port <n>              web UI port (default 8080)\n"
+        "  --settings <path>       saved preset edits (default ~/.config/guitar-pedal-cpp/presets.conf)\n"
+        "  --no-web                don't serve the web UI\n"
+        "  --simulate              start with the built-in signal generator on\n"
+        "  --list                  list audio devices and exit\n";
+}
+
+bool parse_args(int argc, char** argv, Options* opt) {
+    for (int i = 1; i < argc; ++i) {
+        const std::string a = argv[i];
+        const bool has_next = (i + 1 < argc);
+        if (a == "--device" && has_next) opt->device = argv[++i];
+        else if (a == "--out-device" && has_next) opt->out_device = argv[++i];
+        else if (a == "--rate" && has_next) opt->rate = std::stoul(argv[++i]);
+        else if (a == "--frames" && has_next) opt->frames = std::stoul(argv[++i]);
+        else if (a == "--port" && has_next) opt->port = static_cast<std::uint16_t>(std::stoul(argv[++i]));
+        else if (a == "--settings" && has_next) opt->settings = argv[++i];
+        else if (a == "--no-web") opt->web = false;
+        else if (a == "--simulate") opt->simulate = true;
+        else if (a == "--list") opt->list = true;
+        else if (a == "-h" || a == "--help") { print_usage(); return false; }
+        else {
+            std::cerr << "unknown option: " << a << "\n\n";
+            print_usage();
+            return false;
+        }
+    }
+    return true;
+}
+
+// Where saved preset edits live. Under $HOME rather than beside the binary so
+// a rebuild, or running from a different directory, doesn't lose them.
+std::string default_settings_path() {
+    const char* home = std::getenv("HOME");
+    if (home == nullptr || *home == '\0') return "guitar-pedal-presets.conf";
+    return std::string(home) + "/.config/guitar-pedal-cpp/presets.conf";
 }
 
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
+    Options opt;
+    if (!parse_args(argc, argv, &opt)) return 1;
+
     std::signal(SIGINT, on_sigint);
 
     RtAudio audio;
-    if (audio.getDeviceCount() == 0) {
-        std::cerr << "No audio devices found\n";
-        return 1;
+    const std::vector<audiodev::Device> devices = audiodev::enumerate(audio);
+
+    if (opt.list) {
+        for (const auto& d : devices) {
+            std::cout << "  " << d.id << "  " << d.name << "  (in " << d.in_channels << ", out "
+                      << d.out_channels << ")\n";
+        }
+        return 0;
     }
 
-    RtAudio::StreamParameters in_params;
-    in_params.deviceId = audio.getDefaultInputDevice();
-    in_params.nChannels = 1;
+    // Resolve devices before anything else, because the sample rate the whole
+    // engine is built around comes from them.
+    std::string audio_status;
+    bool have_devices = false;
+    audiodev::Device in_dev;
+    audiodev::Device out_dev;
 
-    RtAudio::StreamParameters out_params;
-    out_params.deviceId = audio.getDefaultOutputDevice();
-    out_params.nChannels = 1;
+    if (devices.empty()) {
+        audio_status = "no audio devices found";
+    } else if (!opt.device.empty() &&
+               !audiodev::resolve(devices, opt.device, true, &in_dev, &audio_status)) {
+        // audio_status already explains it.
+    } else if (opt.device.empty() && !audiodev::guess_device(devices, true, false, &in_dev)) {
+        audio_status = "no capture device — plug the interface in and restart";
+    } else {
+        out_dev = in_dev;
+        if (!opt.out_device.empty() &&
+            !audiodev::resolve(devices, opt.out_device, false, &out_dev, &audio_status)) {
+            // audio_status already explains it.
+        } else {
+            have_devices = true;
+        }
+    }
 
-    unsigned int sample_rate = 48000;
-    unsigned int buffer_frames = 256;
+    unsigned int sample_rate = opt.rate;
+    if (have_devices && sample_rate == 0 &&
+        !audiodev::pick_shared_rate(in_dev, out_dev, &sample_rate, &audio_status)) {
+        have_devices = false;
+    }
+    if (sample_rate == 0) sample_rate = audiodev::kPreferredRate;
+
+    unsigned int buffer_frames = opt.frames;
 
     PedalChain chain(static_cast<float>(sample_rate));
+    g_telemetry.configure(static_cast<float>(sample_rate), buffer_frames);
 
-    try {
-        audio.openStream(&out_params, &in_params, RTAUDIO_FLOAT32, sample_rate, &buffer_frames,
-                          &audio_callback, &chain);
-        audio.startStream();
-    } catch (const std::exception& e) {
-        std::cerr << "RtAudio error: " << e.what() << "\n";
-        return 1;
+    // Saved edits are read before the stream opens, so the first buffer already
+    // sounds the way it did when the pedal was last switched off.
+    {
+        const std::string settings_path =
+            opt.settings.empty() ? default_settings_path() : opt.settings;
+        std::error_code ec;
+        std::filesystem::create_directories(
+            std::filesystem::path(settings_path).parent_path(), ec);
+        chain.board.set_storage_path(settings_path);
+        chain.board.load_user_presets();
+        std::cout << "Preset edits: " << settings_path << "\n";
     }
 
-    std::cout << "guitar-pedal-cpp running at " << sample_rate << " Hz, " << buffer_frames
-              << "-frame buffer. Preset: " << preset_name(chain.preset.load()) << ". Ctrl+C to stop.\n";
+    // The stream is allowed to fail. The dev UI, the footswitches and the LCD
+    // are all still worth having on a Pi with nothing plugged into it — and
+    // "audio stopped, here is why" is a far more useful screen than an exit
+    // code, especially when the board is not in the room.
+    bool audio_running = false;
+    if (have_devices) {
+        RtAudio::StreamParameters in_params;
+        in_params.deviceId = in_dev.id;
+        in_params.nChannels = 1;
+        RtAudio::StreamParameters out_params;
+        out_params.deviceId = out_dev.id;
+        out_params.nChannels = 1;
+
+        audio_running = open_stream(audio, &out_params, &in_params, &buffer_frames, sample_rate,
+                                    &chain, &audio_status);
+        if (audio_running) {
+            // openStream is allowed to grant a different buffer size than asked.
+            g_telemetry.configure(static_cast<float>(sample_rate), buffer_frames);
+            audio_status.clear();
+            std::cout << "Audio: " << in_dev.name << " -> " << out_dev.name << ", " << sample_rate
+                      << " Hz, " << buffer_frames << "-frame buffer.\n";
+        } else {
+            std::cerr << "Audio not started: " << audio_status << "\n";
+        }
+    } else {
+        std::cerr << "Audio not started: " << audio_status << "\n";
+    }
+    std::cout << "Preset: " << chain.board.presets()[chain.board.current()].name << " ("
+              << chain.board.preset_count() << " available). Ctrl+C to stop.\n";
+
+    // ------------------------------------------------------------- simulator
+    std::atomic<bool> simulate{opt.simulate};
+    std::thread sim_thread;
+    if (!audio_running) {
+        sim_thread = std::thread([&]() {
+            SignalGenerator gen(static_cast<float>(sample_rate));
+            std::vector<float> in(buffer_frames);
+            std::vector<float> out(buffer_frames);
+            const auto period = std::chrono::nanoseconds(
+                static_cast<long long>(1e9 * buffer_frames / sample_rate));
+            auto next = std::chrono::steady_clock::now();
+            while (!g_stop.load(std::memory_order_relaxed)) {
+                next += period;
+                if (simulate.load(std::memory_order_relaxed)) {
+                    gen.fill(in.data(), buffer_frames);
+                    run_block(chain, in.data(), out.data(), buffer_frames);
+                }
+                std::this_thread::sleep_until(next);
+            }
+        });
+    }
+
+    // ------------------------------------------------------- control surface
+    bool have_looper_switch = false;
+    bool have_utility_switch = false;
+    bool have_leds = false;
+    bool have_lcd = false;
+
+    std::unique_ptr<WebServer> web;
+    if (opt.web) {
+        web = std::make_unique<WebServer>(g_telemetry, opt.port);
+    }
+    const auto note = [&web](std::string message) {
+        std::cout << message << "\n";
+        if (web) web->log(std::move(message));
+    };
 
 #ifdef PEDAL_HAVE_GPIO
     // Pi 5 exposes its 40-pin header through the RP1 chip, which this kernel
@@ -201,7 +382,11 @@ int main() {
 
     try {
         looper_switch = std::make_unique<GpioButton>(kGpioChip, kLooperSwitchLine);
-        looper_switch->start([&chain]() { chain.looper.on_trigger(); });
+        looper_switch->start([&]() {
+            chain.looper.on_trigger();
+            if (web) web->log("footswitch: looper trigger");
+        });
+        have_looper_switch = true;
         std::cout << "Looper footswitch armed on line " << kLooperSwitchLine
                   << " (record -> play -> overdub).\n";
     } catch (const std::exception& e) {
@@ -211,17 +396,18 @@ int main() {
     try {
         utility_switch = std::make_unique<GpioButton>(kGpioChip, kUtilitySwitchLine);
         utility_clicks.set_handlers(
-            [&chain]() {
+            [&]() {
                 chain.looper.clear();
                 chain.clear_count.fetch_add(1, std::memory_order_relaxed);
-                std::cout << "Loop cleared.\n";
+                note("footswitch: loop cleared");
             },
-            [&chain]() {
-                std::cout << "Preset: " << preset_name(chain.cycle_preset()) << "\n";
+            [&]() {
+                note("footswitch: preset -> " + chain.board.presets()[chain.board.cycle()].name);
             });
         utility_switch->start(
             [&utility_clicks]() { utility_clicks.on_press(std::chrono::steady_clock::now()); },
             [&utility_clicks]() { utility_clicks.poll(std::chrono::steady_clock::now()); });
+        have_utility_switch = true;
         std::cout << "Utility footswitch armed on line " << kUtilitySwitchLine
                   << " (click = clear, double-click = cycle preset).\n";
     } catch (const std::exception& e) {
@@ -231,6 +417,7 @@ int main() {
     try {
         looper_led = std::make_unique<GpioLed>(kGpioChip, kLooperLedLine);
         preset_led = std::make_unique<GpioLed>(kGpioChip, kPresetLedLine);
+        have_leds = true;
         std::cout << "Status LEDs armed on lines " << kLooperLedLine << " and " << kPresetLedLine
                   << ".\n";
     } catch (const std::exception& e) {
@@ -241,6 +428,7 @@ int main() {
         lcd = std::make_unique<Lcd1602>(kGpioChip, kLcdPins);
         lcd->write_line(0, "guitar-pedal-cpp");
         lcd->write_line(1, "starting...");
+        have_lcd = true;
         std::cout << "LCD1602 armed (RS=" << kLcdPins.rs << ", E=" << kLcdPins.enable << ").\n";
     } catch (const std::exception& e) {
         std::cerr << "LCD1602 unavailable (" << e.what() << ").\n";
@@ -254,7 +442,7 @@ int main() {
             using namespace std::chrono_literals;
             LedPattern looper_pattern;
             LedPattern preset_pattern;
-            int last_preset = chain.preset.load(std::memory_order_relaxed);
+            int last_preset = chain.board.current();
             unsigned last_clear = chain.clear_count.load(std::memory_order_relaxed);
 
             while (!g_stop.load(std::memory_order_relaxed)) {
@@ -268,12 +456,15 @@ int main() {
                     case Looper::State::Overdubbing: looper_pattern.set_blink(200ms, now); break;
                 }
 
-                const int preset = chain.preset.load(std::memory_order_relaxed);
+                const int preset = chain.board.current();
                 if (preset != last_preset) {
                     last_preset = preset;
-                    // preset+1 flashes, so the LED counts out which preset is
-                    // live without needing the terminal.
-                    preset_pattern.flash_burst(preset + 1, 120ms, 180ms, now);
+                    // Two quick flashes to acknowledge the change. This used to
+                    // flash the preset number, which stopped being countable
+                    // once the table grew past five entries — the LCD and the
+                    // web UI both name the preset, so the LED only needs to say
+                    // that something happened.
+                    preset_pattern.flash_burst(2, 90ms, 110ms, now);
                 }
 
                 const unsigned clears = chain.clear_count.load(std::memory_order_relaxed);
@@ -290,7 +481,9 @@ int main() {
                     // write_line() no-ops when the text is unchanged, so this
                     // only costs GPIO traffic when something actually moved.
                     lcd->write_line(0, std::string("LOOP: ") + looper_state_name(state));
-                    lcd->write_line(1, std::string("FX:   ") + preset_short_name(preset));
+                    lcd->write_line(
+                        1, "FX:   " + chain.board.presets()[static_cast<std::size_t>(preset)]
+                                          .short_name);
                 }
 
                 std::this_thread::sleep_for(20ms);
@@ -301,22 +494,146 @@ int main() {
     std::cout << "Built without GPIO support; no footswitches or status LEDs.\n";
 #endif
 
-    while (!g_stop.load(std::memory_order_relaxed)) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    // -------------------------------------------------------------- web UI
+    if (web) {
+        WebServer::StaticInfo info;
+        for (const auto& preset : chain.board.presets()) {
+            info.presets.push_back({preset.id, preset.name, preset.blurb, preset.gear});
+        }
+        info.device_in = audio_running ? in_dev.name : "-";
+        info.device_out = audio_running ? out_dev.name : "-";
+        info.sample_rate = sample_rate;
+        info.buffer_frames = buffer_frames;
+        web->set_static_info(std::move(info));
+
+        // The pedalboard owns the stages and already describes its own knobs,
+        // so the table is translated rather than restated — adding an effect
+        // changes Presets.cpp and nothing here. The looper is appended by hand
+        // because it sits after the board, not inside it.
+        std::vector<WebServer::Param> params;
+        params.reserve(chain.board.params().size() + 1);
+        for (const auto& p : chain.board.params()) {
+            params.push_back({p.id, p.group, p.label, p.min, p.max, p.get, p.set});
+        }
+        params.push_back({"looper.decay", "Looper", "Overdub decay", 0.5f, 1.0f,
+                          [&] { return chain.looper.overdub_decay(); },
+                          [&](float v) { chain.looper.set_overdub_decay(v); }});
+        web->set_params(std::move(params));
+
+        WebServer::Callbacks cb;
+        // Every one of these is an atomic store or a pending flag — the same
+        // surfaces the footswitch thread uses. The web thread gets no special
+        // access to the engine, and the audio thread never waits on it.
+        cb.set_preset = [&](int value) {
+            if (value < 0 || value >= chain.board.preset_count()) return;
+            chain.board.select(value);
+            note("web: preset -> " + chain.board.presets()[static_cast<std::size_t>(value)].name);
+        };
+        cb.looper_trigger = [&]() {
+            chain.looper.on_trigger();
+            if (web) web->log("web: looper trigger");
+        };
+        cb.looper_clear = [&]() {
+            chain.looper.clear();
+            chain.clear_count.fetch_add(1, std::memory_order_relaxed);
+            if (web) web->log("web: loop cleared");
+        };
+        cb.set_simulator = [&](bool on) {
+            if (audio_running) {
+                if (web) web->log("web: simulator ignored — the sound card owns the chain");
+                return;
+            }
+            simulate.store(on, std::memory_order_relaxed);
+            if (web) web->log(on ? "web: simulator on" : "web: simulator off");
+        };
+        cb.reset_stats = [&]() {
+            g_telemetry.reset_peaks();
+            if (web) web->log("web: counters reset");
+        };
+        cb.save_preset = [&]() {
+            const int index = chain.board.current();
+            const std::string name = chain.board.presets()[static_cast<std::size_t>(index)].name;
+            std::string error;
+            if (chain.board.save_user_preset(index, &error)) {
+                note("saved settings for " + name);
+            } else {
+                note("could not save " + name + ": " + error);
+            }
+        };
+        cb.reset_preset = [&]() {
+            const int index = chain.board.current();
+            const std::string name = chain.board.presets()[static_cast<std::size_t>(index)].name;
+            std::string error;
+            if (chain.board.reset_preset(index, &error)) {
+                note(name + " restored to defaults");
+            } else {
+                note("could not reset " + name + ": " + error);
+            }
+        };
+        cb.reset_all_presets = [&]() {
+            std::string error;
+            if (chain.board.reset_all(&error)) {
+                note("every preset restored to defaults");
+            } else {
+                note("could not reset presets: " + error);
+            }
+        };
+        web->set_callbacks(std::move(cb));
+
+        web->set_state_provider([&]() {
+            WebServer::DynamicState d;
+            const int preset = chain.board.current();
+            const auto& spec = chain.board.presets()[static_cast<std::size_t>(preset)];
+            d.preset = preset;
+            d.active_groups = spec.groups;
+            d.preset_modified = chain.board.has_override(preset);
+            d.compressor_reduction_db = chain.board.compressor().reduction_db();
+            const Looper::State state = chain.looper.state();
+            d.looper_state = looper_state_name(state);
+            d.loop_frames = chain.looper.length();
+            d.loop_position = chain.looper.position();
+            d.audio_running = audio_running;
+            d.audio_status = audio_status;
+            d.simulator = simulate.load(std::memory_order_relaxed);
+            // The same two strings the LCD gets, so the browser shows what the
+            // panel shows even on a board with no LCD wired to it.
+            d.lcd0 = std::string("LOOP: ") + looper_state_name(state);
+            d.lcd1 = "FX:   " + spec.short_name;
+            d.have_looper_switch = have_looper_switch;
+            d.have_utility_switch = have_utility_switch;
+            d.have_leds = have_leds;
+            d.have_lcd = have_lcd;
+            return d;
+        });
+
+        try {
+            web->start();
+            std::cout << "Dev UI on http://0.0.0.0:" << opt.port << "/ (LAN only, no auth).\n";
+            web->log("pedal started");
+            if (!audio_running) web->log("audio not started: " + audio_status);
+        } catch (const std::exception& e) {
+            std::cerr << "Web UI unavailable (" << e.what() << ").\n";
+            web.reset();
+        }
     }
 
-    std::cout << "\nStopping. Xruns: " << g_xrun_count.load(std::memory_order_relaxed) << "\n";
+    while (!g_stop.load(std::memory_order_relaxed)) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    }
+
+    const Telemetry::Snapshot final_stats = g_telemetry.snapshot();
+    std::cout << "\nStopping. Xruns: " << final_stats.xruns << ", worst callback: "
+              << final_stats.block_us_max << " us of a " << final_stats.budget_us << " us budget.\n";
+
+    if (web) web->stop();
+    if (sim_thread.joinable()) sim_thread.join();
 
 #ifdef PEDAL_HAVE_GPIO
-    if (indicator.joinable()) {
-        indicator.join();
-    }
+    if (indicator.joinable()) indicator.join();
 #endif
 
-    audio.stopStream();
-    if (audio.isStreamOpen()) {
-        audio.closeStream();
-    }
+    if (audio.isStreamRunning()) audio.stopStream();
+    if (audio.isStreamOpen()) audio.closeStream();
 
     return 0;
 }

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <cstddef>
 #include <vector>
 
 #include "Effect.h"
@@ -29,6 +30,15 @@ public:
     // the audio thread's plain state_ member.
     State state() const { return published_state_.load(std::memory_order_relaxed); }
 
+    float overdub_decay() const { return overdub_decay_.load(std::memory_order_relaxed); }
+
+    // Published alongside state() at the end of each process() call, for the
+    // same reason: an observer thread must not read the audio thread's plain
+    // members. While recording, length() reports how much has been captured so
+    // far, so a progress display grows in real time instead of sitting at zero.
+    std::size_t length() const { return published_length_.load(std::memory_order_relaxed); }
+    std::size_t position() const { return published_position_.load(std::memory_order_relaxed); }
+
     void process(float* buffer, std::size_t n_frames) override;
 
 private:
@@ -38,6 +48,8 @@ private:
     std::size_t loop_length_ = 0;
     State state_ = State::Empty;
     std::atomic<State> published_state_{State::Empty};
+    std::atomic<std::size_t> published_length_{0};
+    std::atomic<std::size_t> published_position_{0};
 
     std::atomic<bool> trigger_pending_{false};
     std::atomic<bool> clear_pending_{false};

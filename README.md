@@ -52,6 +52,9 @@ playing.
 5. **Control surface** — GPIO footswitches for looper transport and preset switching, with LED and
    LCD1602 status output. All of it runs on one 50 Hz indicator thread; none of it touches the
    audio callback.
+6. **Telemetry + dev UI** — the audio callback publishes levels, timing and a waveform window
+   through lock-free structures; a dependency-free HTTP server on its own thread serves a browser
+   UI over the network for bench work.
 
 ## Roadmap
 
@@ -73,6 +76,10 @@ playing.
       build and run on the target Pi 5. What's left is the physical half — nothing is wired to the
       header yet, so a real press has never been observed end to end.
 - [x] **9. Stretch: looper overdub** — layer additional passes onto an existing loop
+- [x] **10. Dev UI** — the pedal serves its own bench console over HTTP: live input/output metering,
+      a waveform scope, callback time against the buffer deadline, direct preset selection, looper
+      transport, and live parameter tweaking. Read path is lock-free from the audio thread; write
+      path reuses the same atomics the footswitches use.
 
 ## Dev environment
 
@@ -98,6 +105,23 @@ cmake --build build
 ./build/guitar_pedal
 ```
 
+`guitar_pedal` takes a few options, all optional:
+
+| Flag | Meaning |
+|---|---|
+| `--device <id\|name>` | capture device, by id or case-insensitive name substring |
+| `--out-device <id\|name>` | playback device (defaults to the capture device) |
+| `--rate <hz>` / `--frames <n>` | sample rate and buffer size (default: device preference, 256) |
+| `--port <n>` | dev UI port (default 8080) |
+| `--no-web` | don't serve the dev UI |
+| `--simulate` | start with the built-in signal generator on |
+| `--list` | print the audio devices and exit |
+
+Without `--device` it picks the first duplex device rather than the system default, which on a Pi
+is HDMI or nothing. **The stream failing to open is not fatal** — the dev UI, footswitches and LCD
+still come up and the UI reports why audio isn't running, which is a more useful screen than an
+exit code when the board isn't in the room.
+
 Add `-DENABLE_SANITIZERS=ON` to the configure step for an ASan+UBSan build.
 
 On the Pi the build also produces `./build/gpio_check`, a bench diagnostic that exercises one piece
@@ -108,6 +132,46 @@ the pedal itself is in the picture.
 Each DSP stage (`Distortion`, `Delay`, `Chorus`, `Reverb`, `Looper`) is a self-contained
 `process(float* buffer, size_t n_frames)` unit, offline-testable against synthetic signals without
 any audio hardware — `./build/offline_tests` (or `ctest` from the build dir) runs that suite.
+
+### Dev UI
+
+`http://<pi>:8080/` while the pedal is running. It exists because the LCD is two lines of sixteen
+characters and a lot of what matters while building this — how hot the input actually is, how much
+of the buffer deadline the chain is eating, what the waveform looks like after the reverb — doesn't
+fit there.
+
+| Panel | What it answers |
+|---|---|
+| Levels | Is the guitar reaching the Pi at a sane level, and is the output clipping? Peak + RMS in dBFS, with a latched clip count. |
+| Waveform | What the signal looks like before and after the chain, on one ~43 ms window. |
+| Deadline | Callback time (last / average / worst) against the `frames / rate` budget, plus the xrun count. This is the number the whole project is about. |
+| Effect | Direct preset selection, rather than cycling the footswitch to get back to the one you wanted. |
+| Looper | State, loop length, and a live playhead — plus trigger/clear, so looper logic can be tested with no switch wired. |
+| Parameters | Live sliders for every DSP knob, so a tone gets tuned by ear instead of by rebuild. |
+| Control surface | A mirror of the LCD and which GPIO devices actually opened. |
+
+Design notes, since this is the part most likely to be got wrong:
+
+- **The audio thread never blocks on it.** `Telemetry` is written with relaxed atomic stores into
+  preallocated members. The waveform window is too big for one atomic, so it uses a **seqlock**:
+  the writer bumps a counter to odd, copies, bumps to even, and never waits; a reader that sees a
+  torn read simply retries and drops a UI frame. A stalled reader costs a dropped frame; a stalled
+  writer would cost an audible glitch, so the asymmetry runs the right way.
+- **Commands take the paths that already existed** — an atomic preset index and the looper's
+  pending-action flags. The browser is just another control thread alongside the footswitches; it
+  gets no privileged access to the engine.
+- **No third-party HTTP or JSON library.** One thread, one `poll()` loop, six routes. Small state
+  is *pushed* over server-sent events at 25 Hz (one-directional and periodic, so a WebSocket frame
+  codec and upgrade handshake would buy nothing); the bulkier waveform is *pulled* as raw float32
+  at ~15 Hz, so a slow client throttles itself instead of backing up the server.
+- **The page is compiled into the binary** from `web/index.html` by `tools/embed_html.cmake`, so
+  deployment stays one file with no runtime path to get wrong.
+
+Measured on the Pi 5 with the shoegaze chain (fuzz → chorus → reverb → looper) at 48 kHz / 256
+frames, driven by the built-in generator with no interface attached: **~120 µs average per buffer
+against a 5333 µs deadline** — ~185 µs with the looper overdubbing — so 2–3.5% of budget, while
+serving three concurrent UI clients. Worth re-measuring against real capture once the interface is
+in, since ALSA's own callback overhead isn't in that number.
 
 ### Control surface wiring (Pi only)
 

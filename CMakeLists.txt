@@ -21,13 +21,27 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(RTAUDIO REQUIRED IMPORTED_TARGET rtaudio)
 
 add_library(pedal_dsp STATIC
-  src/Distortion.cpp
-  src/Delay.cpp
+  src/Amp.cpp
+  src/Biquad.cpp
+  src/BitCrusher.cpp
   src/Chorus.cpp
-  src/Reverb.cpp
-  src/Looper.cpp
   src/ClickDetector.cpp
+  src/Compressor.cpp
+  src/Delay.cpp
+  src/Distortion.cpp
+  src/Flanger.cpp
+  src/Fuzz.cpp
   src/LedPattern.cpp
+  src/Looper.cpp
+  src/Pedalboard.cpp
+  src/Phaser.cpp
+  src/PitchShifter.cpp
+  src/Presets.cpp
+  src/Reverb.cpp
+  src/RingMod.cpp
+  src/Telemetry.cpp
+  src/Tone.cpp
+  src/Tremolo.cpp
 )
 target_include_directories(pedal_dsp PUBLIC include)
 
@@ -45,14 +59,36 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   endif()
 endif()
 
-add_executable(guitar_pedal src/main.cpp)
-target_link_libraries(guitar_pedal PRIVATE pedal_dsp PkgConfig::RTAUDIO)
+# Device enumeration and rate negotiation, shared by the pedal and the bench
+# tool. Kept out of pedal_dsp so the offline test binary still links without
+# RtAudio anywhere near it.
+add_library(pedal_audio STATIC src/AudioDevice.cpp)
+target_link_libraries(pedal_audio PUBLIC pedal_dsp PkgConfig::RTAUDIO)
+
+# The dev UI is compiled into the binary rather than read from disk at runtime:
+# one file to copy to the Pi, and no --ui-dir to get wrong. Editing
+# web/index.html re-runs this and rebuilds.
+set(UI_PAGE_HEADER ${CMAKE_CURRENT_BINARY_DIR}/generated/UiPage.h)
+add_custom_command(
+  OUTPUT ${UI_PAGE_HEADER}
+  COMMAND ${CMAKE_COMMAND}
+          -DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/web/index.html
+          -DOUTPUT=${UI_PAGE_HEADER}
+          -P ${CMAKE_CURRENT_SOURCE_DIR}/tools/embed_html.cmake
+  DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/web/index.html
+          ${CMAKE_CURRENT_SOURCE_DIR}/tools/embed_html.cmake
+  COMMENT "Embedding web/index.html into UiPage.h"
+  VERBATIM)
+
+add_executable(guitar_pedal src/main.cpp src/WebServer.cpp ${UI_PAGE_HEADER})
+target_include_directories(guitar_pedal PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated)
+target_link_libraries(guitar_pedal PRIVATE pedal_audio)
 
 # Bench diagnostic for the audio path. Needs RtAudio but no GPIO, so it builds
 # on the dev machine too — unlike gpio_check, which only exists where libgpiod
 # does.
 add_executable(audio_check tools/audio_check.cpp)
-target_link_libraries(audio_check PRIVATE pedal_dsp PkgConfig::RTAUDIO)
+target_link_libraries(audio_check PRIVATE pedal_audio)
 
 enable_testing()
 add_executable(offline_tests tests/offline_tests.cpp)

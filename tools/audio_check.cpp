@@ -131,8 +131,26 @@ struct Levels {
     std::atomic<float> out_peak{0.0f};
     std::atomic<unsigned> xruns{0};
     std::atomic<unsigned long long> frames{0};
-    unsigned channels = 1;  // set before the stream opens, read-only afterwards
+    unsigned channels = 1;      // input channels; set before the stream opens
+    unsigned out_channels = 1;  // output channels; same rule
 };
+
+// Write one mono block across every channel of an interleaved output buffer.
+// The chain is mono, so both ears get the same signal -- asking for a
+// one-channel output stream instead would write the left ear and leave the
+// right one silent.
+void fan_out(float* out, const float* mono, unsigned int n_frames, unsigned int channels) {
+    if (channels == 1) {
+        std::memcpy(out, mono, n_frames * sizeof(float));
+        return;
+    }
+    for (unsigned int i = 0; i < n_frames; ++i) {
+        const float sample = mono[i];
+        for (unsigned int c = 0; c < channels; ++c) {
+            out[static_cast<std::size_t>(i) * channels + c] = sample;
+        }
+    }
+}
 
 void bump_peak(std::atomic<float>& slot, float value) {
     float prev = slot.load(std::memory_order_relaxed);
@@ -256,8 +274,12 @@ int tone_callback(void* output_buffer, void* /*in*/, unsigned int n_frames, doub
     auto* state = static_cast<ToneState*>(user_data);
     if (status) state->levels.xruns.fetch_add(1, std::memory_order_relaxed);
     auto* out = static_cast<float*>(output_buffer);
+    const unsigned int channels = state->levels.out_channels;
     for (unsigned int i = 0; i < n_frames; ++i) {
-        out[i] = state->amplitude * static_cast<float>(std::sin(state->phase));
+        const float sample = state->amplitude * static_cast<float>(std::sin(state->phase));
+        for (unsigned int c = 0; c < channels; ++c) {
+            out[static_cast<std::size_t>(i) * channels + c] = sample;
+        }
         state->phase += state->step;
         if (state->phase > 2.0 * M_PI) state->phase -= 2.0 * M_PI;
     }
@@ -272,7 +294,8 @@ int thru_callback(void* output_buffer, void* input_buffer, unsigned int n_frames
     if (status) levels->xruns.fetch_add(1, std::memory_order_relaxed);
     // Straight copy, no DSP at all — that is the point. Anything audible here is
     // the wiring, the device, or the driver, never the effects.
-    std::memcpy(output_buffer, input_buffer, n_frames * sizeof(float));
+    fan_out(static_cast<float*>(output_buffer), static_cast<const float*>(input_buffer), n_frames,
+            levels->out_channels);
     float peak = block_peak(static_cast<const float*>(input_buffer), n_frames);
     bump_peak(levels->in_peak, peak);
     bump_peak(levels->out_peak, peak);
@@ -286,6 +309,10 @@ int thru_callback(void* output_buffer, void* input_buffer, unsigned int n_frames
 struct FxState {
     Levels levels;
     Effect* effect = nullptr;
+    // The effect processes in place and the chain is mono, so the block is
+    // processed here and copied out afterwards. Sized before the stream starts:
+    // the audio thread must not allocate.
+    std::vector<float> mono;
 };
 
 int fx_callback(void* output_buffer, void* input_buffer, unsigned int n_frames, double,
@@ -294,13 +321,21 @@ int fx_callback(void* output_buffer, void* input_buffer, unsigned int n_frames, 
     if (status) state->levels.xruns.fetch_add(1, std::memory_order_relaxed);
 
     auto* out = static_cast<float*>(output_buffer);
-    std::memcpy(out, input_buffer, n_frames * sizeof(float));
+    if (n_frames > state->mono.size()) {
+        std::memset(out, 0, static_cast<std::size_t>(n_frames) * state->levels.out_channels *
+                                sizeof(float));
+        state->levels.xruns.fetch_add(1, std::memory_order_relaxed);
+        return 0;
+    }
+    float* mono = state->mono.data();
+    std::memcpy(mono, input_buffer, n_frames * sizeof(float));
     bump_peak(state->levels.in_peak,
               block_peak(static_cast<const float*>(input_buffer), n_frames));
 
-    state->effect->process(out, n_frames);
+    state->effect->process(mono, n_frames);
+    fan_out(out, mono, n_frames, state->levels.out_channels);
 
-    bump_peak(state->levels.out_peak, block_peak(out, n_frames));
+    bump_peak(state->levels.out_peak, block_peak(mono, n_frames));
     state->levels.frames.fetch_add(n_frames, std::memory_order_relaxed);
     return 0;
 }
@@ -432,11 +467,12 @@ int mode_tone(RtAudio& audio, const std::string& spec, double hz) {
     std::cout << "output: " << dev.name << " (id " << dev.id << ")\n";
     RtAudio::StreamParameters out_params;
     out_params.deviceId = dev.id;
-    out_params.nChannels = 1;
+    out_params.nChannels = std::min(dev.out_channels, 2u);
     unsigned int buffer_frames = kBufferFrames;
 
     unsigned int rate = pick_rate(dev);
     ToneState state;
+    state.levels.out_channels = out_params.nChannels;
     state.step = 2.0 * M_PI * hz / rate;
     if (!open_stream(audio, &out_params, nullptr, &buffer_frames, &tone_callback, &state,
                      rate)) {
@@ -478,7 +514,7 @@ int mode_thru(RtAudio& audio, const std::string& out_spec, const std::string& in
 
     RtAudio::StreamParameters out_params;
     out_params.deviceId = out_dev.id;
-    out_params.nChannels = 1;
+    out_params.nChannels = std::min(out_dev.out_channels, 2u);
     RtAudio::StreamParameters in_params;
     in_params.deviceId = in_dev.id;
     in_params.nChannels = 1;
@@ -488,6 +524,7 @@ int mode_thru(RtAudio& audio, const std::string& out_spec, const std::string& in
     if (!pick_shared_rate(in_dev, out_dev, &rate)) return 1;
 
     Levels levels;
+    levels.out_channels = out_params.nChannels;
     if (!open_stream(audio, &out_params, &in_params, &buffer_frames, &thru_callback, &levels,
                      rate)) {
         return 1;
@@ -551,13 +588,18 @@ int mode_fx(RtAudio& audio, const std::string& spec, const std::string& effect_n
 
     RtAudio::StreamParameters out_params;
     out_params.deviceId = dev.id;
-    out_params.nChannels = 1;
+    out_params.nChannels = std::min(dev.out_channels, 2u);
     RtAudio::StreamParameters in_params;
     in_params.deviceId = dev.id;
     in_params.nChannels = 1;
     unsigned int buffer_frames = kBufferFrames;
 
     FxState state;
+    state.levels.out_channels = out_params.nChannels;
+    // Sized generously against the buffer that will be asked for: openStream
+    // may grant a larger one, and the callback cannot allocate to catch up. If
+    // it ever does, fx_callback falls back to silence and counts an xrun.
+    state.mono.assign(kBufferFrames * 4, 0.0f);
     state.effect = effect;
     if (!open_stream(audio, &out_params, &in_params, &buffer_frames, &fx_callback, &state,
                      rate)) {

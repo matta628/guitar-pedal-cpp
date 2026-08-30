@@ -1,8 +1,11 @@
 # guitar-pedal-cpp
 
 A real-time software guitar pedal running on a Raspberry Pi 5: guitar in → C++ audio DSP chain
-(distortion, chorus, delay, reverb, looper) → audio out, played live while actually practicing
-guitar. Aimed at a shoegaze-leaning sound (Cocteau Twins, My Bloody Valentine).
+→ audio out, played live while actually practicing guitar. Fourteen effect stages (compression,
+amp modelling, overdrive, fuzz, bit crushing, ring modulation, EQ, pitch shifting, phaser, flanger,
+chorus, tremolo, delay, reverb) plus a looper, wired into 34 presets — a dozen of which are
+attempts at specific records. Aimed at a shoegaze-leaning sound (Cocteau Twins, My Bloody
+Valentine).
 
 No pre-recorded processing — the point is playing live through the chain, with the same
 fixed-deadline-per-buffer discipline (no allocation, no locks, no syscalls in the hot path) that
@@ -47,8 +50,10 @@ playing.
    a uniform "process this buffer" interface, so stages can be composed/reordered.
 3. **Parameter control** — knobs/settings per effect (gain, mix, delay time, feedback, rate/depth),
    changeable without allocating or blocking in the audio thread.
-4. **Preset chaining** — combining stages into a named signal chain (e.g. "shoegaze mode" = fuzz +
-   chorus + reverb).
+4. **Preset chaining** — one instance of every stage lives for the whole run, and a preset is an
+   ordered array of pointers into them plus a table of parameter values. Switching a preset
+   allocates nothing and frees nothing; it is a fixed number of atomic stores and one published
+   integer.
 5. **Control surface** — GPIO footswitches for looper transport and preset switching, with LED and
    LCD1602 status output. All of it runs on one 50 Hz indicator thread; none of it touches the
    audio callback.
@@ -80,6 +85,10 @@ playing.
       a waveform scope, callback time against the buffer deadline, direct preset selection, looper
       transport, and live parameter tweaking. Read path is lock-free from the audio thread; write
       path reuses the same atomics the footswitches use.
+- [x] **11. Effect library + preset system** — ten more stages (compressor, amp, fuzz, bit crusher,
+      ring modulator, EQ, pitch shifter, phaser, flanger, tremolo) and tape controls on the delay,
+      arranged by a `Pedalboard` that owns every stage for the life of the program. 34 presets,
+      saveable per-preset from the browser. See [Effects and presets](#effects-and-presets).
 
 ## Dev environment
 
@@ -129,9 +138,11 @@ of hardware at a time (`gpio_check led 22`, `gpio_check button 17`, `gpio_check 
 `gpio_check lcd`, `gpio_check all`). It needs no audio interface, so wiring can be verified before
 the pedal itself is in the picture.
 
-Each DSP stage (`Distortion`, `Delay`, `Chorus`, `Reverb`, `Looper`) is a self-contained
-`process(float* buffer, size_t n_frames)` unit, offline-testable against synthetic signals without
-any audio hardware — `./build/offline_tests` (or `ctest` from the build dir) runs that suite.
+Every DSP stage implements one interface — `process(float* buffer, size_t n_frames)` — which is
+what lets the pedalboard treat them as interchangeable and what makes them testable against
+synthetic signals with no audio hardware present. `./build/offline_tests` (or `ctest` from the
+build dir) runs that suite: 116 assertions covering the stages, the looper state machine, the
+telemetry seqlock, and the preset table.
 
 ### Dev UI
 
@@ -173,6 +184,99 @@ against a 5333 µs deadline** — ~185 µs with the looper overdubbing — so 2�
 serving three concurrent UI clients. Worth re-measuring against real capture once the interface is
 in, since ALSA's own callback overhead isn't in that number.
 
+### Effects and presets
+
+Fourteen stages, each a self-contained `Effect`:
+
+| Stage | What it does |
+|---|---|
+| Compressor | Feed-forward peak compressor, hard knee, separate attack and release. Reports live gain reduction to the UI. |
+| Amp | Two gain stages with a passive-style tone stack between them, then a master stage, a presence shelf and a speaker lowpass. |
+| Distortion | Soft `tanh` saturation — keeps the note's envelope. |
+| Fuzz | Hard clipping with adjustable bias asymmetry, a sputter gate and a post-clip tone control. |
+| Bit Crusher | Bit-depth quantisation and sample-rate decimation as independent knobs. |
+| Ring Mod | Multiplication by a sine carrier. Inharmonic by construction. |
+| Tone | Low shelf, sweepable mid peak with adjustable Q, high shelf. A high Mid Q is a parked wah. |
+| Pitch Shifter | Two crossfaded delay taps read at a rate other than the write rate. ±24 semitones plus cents. |
+| Phaser | 2–8 swept allpass stages with feedback, summed against the dry signal. |
+| Flanger | Short modulated delay with feedback, positive or negative. |
+| Chorus | Modulated ~15 ms delay — one detuned copy alongside the dry signal. |
+| Tremolo | Amplitude modulation whose shape sweeps from sine to near-square. |
+| Delay | Feedback echo, plus a lowpass *inside* the feedback loop and a wow/flutter LFO on the delay time — the two things that separate a tape echo from a digital one. |
+| Reverb | Freeverb-style comb and allpass network. |
+
+`Biquad` (the RBJ cookbook formulas, Direct Form I) is shared by `Tone` and `Amp` rather than
+written twice. Direct Form I specifically, because coefficients change while the filter is running
+whenever a knob moves, and DF1 keeps input and output history separate, which is far better
+behaved under that than DF2.
+
+#### Why the pedalboard owns every stage
+
+`Pedalboard` holds one instance of each stage for the entire run. A preset is an ordered
+`std::array<Effect*, 10>` into those instances, plus a list of `(parameter index, value)` pairs
+resolved to indices at startup. Selecting a preset applies the values and publishes one integer;
+the audio thread's whole job is a relaxed load and a walk over a fixed array of pointers.
+
+The obvious alternative — building a `std::vector<std::unique_ptr<Effect>>` per preset and swapping
+it on switch — is what this design exists to avoid. It would allocate on whichever thread switched
+(a footswitch interrupt, or an HTTP request), and it would free the outgoing chain while an audio
+callback might still be walking it. Neither is recoverable at 48 kHz.
+
+The cost of sharing instances is real and worth stating: **a preset must set every parameter of
+every stage it uses.** Anything left unspecified keeps whatever the previously selected preset put
+there, so the sound would depend on which preset you were on before — the kind of bug that is
+maddening to chase by ear, because the preset is only wrong sometimes. The preset table treats
+exhaustive specification as a rule, and `offline_tests` enforces it: a preset that omits a
+parameter of a stage in its chain fails the suite by name.
+
+Two related decisions run deliberately opposite ways. A shipped preset naming a parameter that does
+not exist **throws at startup**, because that is a typo in this repo and a silent skip would
+resurface as the inheritance bug above. A line in the *user's* saved-settings file that no longer
+resolves is **skipped with a warning**, because a settings file written by an older build must
+never stop the pedal from booting.
+
+#### The presets
+
+Twelve are attempts at specific records, worked out by ear against them and against what the
+players were actually using. The rest are single-effect presets for hearing one stage on its own,
+plus four reverb voicings and a `clean` baseline.
+
+| Preset | Chain | After |
+|---|---|---|
+| Slowdive · Soft Focus | Drive → Chorus → Delay → Reverb | Yamaha FX500 "Soft Focus" patch, Boss CE-2, Roland RE-201 |
+| Elliott Smith · Double-Tracked | Compressor → Drive → Chorus → Delay → Reverb | Budda Phatman, Line 6 DL-4, doubled parts |
+| The Strokes · Transporterraum | Compressor → Drive → Amp → Reverb | ProCo RAT, Boss DS-1, Fender Hot Rod DeVille |
+| Arctic Monkeys · Valveslapper | Fuzz → Amp → Phaser → Delay → Reverb | Coopersonic Valveslapper, Fulltone Mini DejaVibe |
+| The Voidz · Tyranny | Fuzz → Bit Crusher → Ring Mod → Pitch → Delay → Reverb | Bit-reduced chains, Boss DB-5 |
+| Wednesday · Bull Believer | Drive → Fuzz → Tone → Amp → Delay → Reverb | RAT into a Big Muff, parked Cry Baby |
+| Led Zeppelin · Tone Bender | Fuzz → Tone → Amp → Delay → Reverb | Sola Sound Tone Bender MkII, parked Vox V846, Echoplex EP-3 |
+| Deftones · Around the Fur | Drive → Tone → Amp → Pitch → Delay → Reverb | Bogner Uberschall, MXR M109, Eventide H9 |
+| Velvet Underground · Ostrich | Drive → Amp → Tremolo → Reverb | Vox AC100 with mid booster, on-board tremolo |
+| Cocteau Twins · Cherry-Coloured | Chorus → Flanger → Pitch → Delay → Reverb | Lexicon 480L, Boss BF-2, Watkins Copicat, Dimension D |
+| Nirvana · Small Clone | Drive → Chorus → Amp → Reverb | Boss DS-1 into an EHX Small Clone |
+| Radiohead · ShredMaster | Drive → Pitch → Phaser → Amp → Tremolo → Delay → Reverb | Marshall ShredMaster, DigiTech Whammy, EHX Small Stone |
+
+A few of these encode something specific rather than a general vibe. The Cocteau Twins preset
+detunes by **ten cents**, not by a slider's worth — that is the Lexicon 480L trick that makes the
+part sound stereo even in mono. The Zeppelin preset parks a wah toe-down as a treble booster
+instead of sweeping it, and leans on the Echoplex's audible wow, which is why `Delay` grew a
+modulation control. The Voidz preset is the reason `BitCrusher` takes fractional bit depths: 5.5
+bits is a real setting there, and an integer-only knob would step through fifteen audible jumps
+instead of sweeping.
+
+Preset order is also the footswitch cycle order, which is why `clean` sits first.
+
+#### Saving
+
+Knob positions can be saved per preset from the dev UI, to
+`~/.config/guitar-pedal-cpp/presets.conf`. Saved edits are stored as a diff against the table
+rather than as a replacement for it, so "reset to default" is a deletion rather than a second table
+of remembered originals, and a preset that gains a new parameter in a later build still gets a
+sensible value for it. The file is plain text on purpose: it needs no parser beyond a stream
+extraction, it diffs readably, and it can be fixed in a text editor over SSH when a preset has been
+saved unlistenable. Writes go to a temporary file and are renamed over the target, so a crash
+halfway through leaves the previous settings intact rather than a truncated file.
+
 ### Control surface wiring (Pi only)
 
 | Function | GPIO | Header pin |
@@ -190,9 +294,12 @@ resistor (220Ω is fine) between the GPIO pin and its anode, with the cathode to
 (non-5V-tolerant) Pi input, and the driver waits out fixed datasheet delays rather than polling the
 busy flag.
 
-The preset cycle is `shoegaze → clean → fuzz → chorus → reverb → …`. Clean is a real preset rather
-than a bypass flag — the looper runs in every preset, so a loop recorded through fuzz still plays
-back after switching to clean.
+A double-click cycles through all 34 presets in table order, starting from `clean`. That is a lot
+of presses to cross by foot, which is the honest cost of putting a whole library behind one switch
+— the dev UI's direct selection exists because cycling does not scale, and the LCD's second line
+shows the current preset's short name so you can see where you are. Clean is a real preset rather
+than a bypass flag: the looper sits after the pedalboard and runs in every preset, so a loop
+recorded through fuzz still plays back after switching to clean.
 
 Single-click detection is inherently late: it can't fire until the 350 ms double-click window
 closes. That's why the gesture pair lives on the utility switch and never on the looper switch,

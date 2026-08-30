@@ -37,10 +37,20 @@ introduced, not just DSP-domain code.
 
 ## Signal path / hardware
 
-Guitar → Fender Mustang Micro (clean/flat amp model, onboard effects off — it's the I/O interface,
-not a competitor to this project) → USB-C (standard USB Audio Class device) → Raspberry Pi 5 →
-C++ audio engine (ALSA/JACK for I/O) → headphones or back out to an amp, for live monitoring while
+Guitar → USB audio interface (class-compliant, Hi-Z/DI instrument input) → Raspberry Pi 5 → C++
+audio engine (ALSA/JACK for I/O) → the same interface's headphone output, for live monitoring while
 playing.
+
+One interface for both directions, rather than one device in and another out: two USB audio devices
+means two independent clocks with no shared word clock, they drift, and the drift arrives as
+periodic clicks. That is survivable for a proof and wrong for a looper, where a drifting clock
+makes correct code sound broken. (The Fender Mustang Micro was the original plan and turned out to
+be **capture-only** — one USB streaming endpoint, and it is an IN. The Pi 5 has no analog output of
+its own either, having dropped the Pi 4's 3.5 mm jack.)
+
+The DSP chain is **mono** end to end — one guitar, one signal path — and the finished signal is
+fanned out to both output channels on the way to the buffer. There is no stereo image to preserve,
+so making fourteen effects stereo would cost cycles and buy nothing.
 
 ## Architecture
 
@@ -284,7 +294,7 @@ halfway through leaves the previous settings intact rather than a truncated file
 | Looper switch — record → play → overdub | 17 | 11 |
 | Utility switch — click: clear · double-click: cycle preset | 27 | 13 |
 | Looper LED — solid: recording · slow blink: playing · fast blink: overdubbing | 22 | 15 |
-| Preset LED — flashes the preset number; one long flash on clear | 23 | 16 |
+| Preset LED — two quick flashes on a preset change; one long flash on clear | 23 | 16 |
 | LCD1602 RS / E / D4 / D5 / D6 / D7 | 5 / 6 / 13 / 19 / 26 / 16 | 29 / 31 / 33 / 35 / 37 / 36 |
 
 Wire one leg of each momentary pushbutton to its GPIO line and the other to GND — the code requests

@@ -57,7 +57,21 @@ struct PedalChain {
     // without the click handler touching a LedPattern from another thread.
     std::atomic<unsigned> clear_count{0};
 
+    // The chain is mono: one guitar, one signal path, no stereo image to
+    // preserve. The interface is not mono, so the result has to be fanned out
+    // to its channels. That needs somewhere to put the mono signal while it is
+    // being processed, and the audio callback may not allocate — hence a
+    // scratch buffer sized once, before the stream starts.
+    std::vector<float> mono;
+    unsigned int out_channels = 1;
+
     explicit PedalChain(float sample_rate) : board(sample_rate), looper(sample_rate) {}
+
+    // Call before the stream is started, never while it is running.
+    void prepare(unsigned int max_frames, unsigned int channels) {
+        mono.assign(max_frames, 0.0f);
+        out_channels = channels;
+    }
 };
 
 // The whole per-buffer job, factored out so the offline signal generator can
@@ -65,20 +79,48 @@ struct PedalChain {
 // allocation, no locks, no syscalls (steady_clock::now() is a vDSO read).
 void run_block(PedalChain& chain, const float* in, float* out, unsigned int n_frames) {
     const auto t0 = std::chrono::steady_clock::now();
+    const unsigned int channels = chain.out_channels;
 
-    if (in != nullptr) {
-        std::memcpy(out, in, n_frames * sizeof(float));
-    } else {
-        std::memset(out, 0, n_frames * sizeof(float));
+    // RtAudio should never ask for more frames than the stream was opened
+    // with, but growing the scratch buffer here would be an allocation on the
+    // audio thread. Silence is the safe way to be wrong.
+    if (n_frames > chain.mono.size()) {
+        std::memset(out, 0, static_cast<std::size_t>(n_frames) * channels * sizeof(float));
+        g_telemetry.note_xrun();
+        return;
     }
 
-    chain.board.process(out, n_frames);
+    float* mono = chain.mono.data();
+    if (in != nullptr) {
+        std::memcpy(mono, in, n_frames * sizeof(float));
+    } else {
+        std::memset(mono, 0, n_frames * sizeof(float));
+    }
+
+    chain.board.process(mono, n_frames);
 
     // After the pedalboard, not inside it: the looper records what you would
     // hear, and keeps running even on the clean preset.
-    chain.looper.process(out, n_frames);
+    chain.looper.process(mono, n_frames);
 
-    g_telemetry.record_block(in, out, n_frames, std::chrono::steady_clock::now() - t0);
+    // Fan the finished mono signal out to every output channel, interleaved.
+    // Writing only channel 0 -- which is what asking RtAudio for a one-channel
+    // output stream does -- puts the guitar in the left ear and silence in the
+    // right one.
+    if (channels == 1) {
+        std::memcpy(out, mono, n_frames * sizeof(float));
+    } else {
+        for (unsigned int i = 0; i < n_frames; ++i) {
+            const float sample = mono[i];
+            for (unsigned int c = 0; c < channels; ++c) {
+                out[static_cast<std::size_t>(i) * channels + c] = sample;
+            }
+        }
+    }
+
+    // The mono signal is what the meters and the scope should show: it is the
+    // thing the chain actually produced, and the duplicate adds no information.
+    g_telemetry.record_block(in, mono, n_frames, std::chrono::steady_clock::now() - t0);
 }
 
 int audio_callback(void* output_buffer, void* input_buffer, unsigned int n_frames,
@@ -92,6 +134,10 @@ int audio_callback(void* output_buffer, void* input_buffer, unsigned int n_frame
 // RtAudio 6 returns an error code where RtAudio 5 throws. Funnelled here so the
 // caller reads the same either way — and so a failed open is actually noticed:
 // a try/catch alone silently "succeeds" against RtAudio 6.
+// Opening and starting are deliberately separate calls. openStream is allowed
+// to grant a different buffer size than the one asked for, and the scratch
+// buffer has to be sized against what was actually granted -- which has to
+// happen before the first callback can fire, not after.
 bool open_stream(RtAudio& audio, RtAudio::StreamParameters* out_params,
                  RtAudio::StreamParameters* in_params, unsigned int* buffer_frames,
                  unsigned int rate, void* user_data, std::string* error) {
@@ -101,6 +147,21 @@ bool open_stream(RtAudio& audio, RtAudio::StreamParameters* out_params,
         *error = audio.getErrorText();
         return false;
     }
+    return true;
+#else
+    try {
+        audio.openStream(out_params, in_params, RTAUDIO_FLOAT32, rate, buffer_frames,
+                         &audio_callback, user_data);
+        return true;
+    } catch (const std::exception& e) {
+        *error = e.what();
+        return false;
+    }
+#endif
+}
+
+bool start_stream(RtAudio& audio, std::string* error) {
+#if PEDAL_RTAUDIO6
     if (audio.startStream() != RTAUDIO_NO_ERROR) {
         *error = audio.getErrorText();
         return false;
@@ -108,8 +169,6 @@ bool open_stream(RtAudio& audio, RtAudio::StreamParameters* out_params,
     return true;
 #else
     try {
-        audio.openStream(out_params, in_params, RTAUDIO_FLOAT32, rate, buffer_frames,
-                         &audio_callback, user_data);
         audio.startStream();
         return true;
     } catch (const std::exception& e) {
@@ -292,20 +351,37 @@ int main(int argc, char** argv) {
     if (have_devices) {
         RtAudio::StreamParameters in_params;
         in_params.deviceId = in_dev.id;
+        // One input channel: a guitar is one signal, and it arrives on the
+        // interface's first input. RtAudio converts from however many channels
+        // the device natively opens.
         in_params.nChannels = 1;
         RtAudio::StreamParameters out_params;
         out_params.deviceId = out_dev.id;
-        out_params.nChannels = 1;
+        // Both sides of a pair of headphones, where the device has two. Capped
+        // at two on purpose: on a multi-output interface the headphone jack is
+        // channels 1/2, and filling the rest would be noise in someone's
+        // monitors.
+        const unsigned int out_channels = std::min(out_dev.out_channels, 2u);
+        out_params.nChannels = out_channels;
 
-        audio_running = open_stream(audio, &out_params, &in_params, &buffer_frames, sample_rate,
-                                    &chain, &audio_status);
-        if (audio_running) {
-            // openStream is allowed to grant a different buffer size than asked.
+        if (open_stream(audio, &out_params, &in_params, &buffer_frames, sample_rate, &chain,
+                        &audio_status)) {
+            // openStream is allowed to grant a different buffer size than
+            // asked, so both of these are sized against what came back -- and
+            // both must happen before startStream lets a callback run.
+            chain.prepare(buffer_frames, out_channels);
             g_telemetry.configure(static_cast<float>(sample_rate), buffer_frames);
-            audio_status.clear();
-            std::cout << "Audio: " << in_dev.name << " -> " << out_dev.name << ", " << sample_rate
-                      << " Hz, " << buffer_frames << "-frame buffer.\n";
-        } else {
+
+            audio_running = start_stream(audio, &audio_status);
+            if (audio_running) {
+                audio_status.clear();
+                std::cout << "Audio: " << in_dev.name << " -> " << out_dev.name << ", "
+                          << sample_rate << " Hz, " << buffer_frames << "-frame buffer, "
+                          << out_channels << " out channel" << (out_channels == 1 ? "" : "s")
+                          << ".\n";
+            }
+        }
+        if (!audio_running) {
             std::cerr << "Audio not started: " << audio_status << "\n";
         }
     } else {
@@ -318,6 +394,7 @@ int main(int argc, char** argv) {
     std::atomic<bool> simulate{opt.simulate};
     std::thread sim_thread;
     if (!audio_running) {
+        chain.prepare(buffer_frames, 1);
         sim_thread = std::thread([&]() {
             SignalGenerator gen(static_cast<float>(sample_rate));
             std::vector<float> in(buffer_frames);

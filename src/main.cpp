@@ -438,13 +438,19 @@ int main(int argc, char** argv) {
     constexpr unsigned int kLooperLedLine = 22;      // physical pin 15
     constexpr unsigned int kPresetLedLine = 23;      // physical pin 16
     // LCD1602 in 4-bit mode: RS, E, D4-D7. R/W is tied to GND on the module.
+    // Pins 29-37 are five consecutive inner-row GPIO lines, taken in the same
+    // order as the LCD's own pins, so those five wires run parallel and cannot
+    // be swapped by miscounting. The sixth cannot join them: the next inner
+    // pin, 39, is hardwired GND. D7 therefore goes to pin 38 -- outer row, but
+    // *after* pin 37 rather than between 35 and 37, which is where it used to
+    // sit and why it had to cross two wires to reach the far end of the LCD.
     constexpr Lcd1602::Pins kLcdPins{
         /*rs=*/5,       // physical pin 29
         /*enable=*/6,   // physical pin 31
         /*d4=*/13,      // physical pin 33
         /*d5=*/19,      // physical pin 35
         /*d6=*/26,      // physical pin 37
-        /*d7=*/16,      // physical pin 36
+        /*d7=*/20,      // physical pin 38
     };
 
     // Declared before the buttons so it outlives their polling threads, which

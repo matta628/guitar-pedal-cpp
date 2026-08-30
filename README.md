@@ -295,7 +295,7 @@ halfway through leaves the previous settings intact rather than a truncated file
 | Utility switch — click: clear · double-click: cycle preset | 27 | 13 |
 | Looper LED — solid: recording · slow blink: playing · fast blink: overdubbing | 22 | 15 |
 | Preset LED — two quick flashes on a preset change; one long flash on clear | 23 | 16 |
-| LCD1602 RS / E / D4 / D5 / D6 / D7 | 5 / 6 / 13 / 19 / 26 / 16 | 29 / 31 / 33 / 35 / 37 / 36 |
+| LCD1602 RS / E / D4 / D5 / D6 / D7 | 5 / 6 / 13 / 19 / 26 / 20 | 29 / 31 / 33 / 35 / 37 / 38 |
 
 Wire one leg of each momentary pushbutton to its GPIO line and the other to GND — the code requests
 the lines with an internal pull-up, so no external resistor is needed. Each LED needs a series

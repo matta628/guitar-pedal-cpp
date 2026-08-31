@@ -13,8 +13,10 @@
 #include "Compressor.h"
 #include "Delay.h"
 #include "Distortion.h"
+#include "EnvFilter.h"
 #include "Effect.h"
 #include "Flanger.h"
+#include "Freeze.h"
 #include "Fuzz.h"
 #include "Phaser.h"
 #include "PitchShifter.h"
@@ -22,6 +24,7 @@
 #include "RingMod.h"
 #include "Tone.h"
 #include "Tremolo.h"
+#include "WaveFolder.h"
 
 // Every effect this pedal can produce, and the presets that wire them into
 // chains.
@@ -52,7 +55,10 @@ public:
         Fuzz,
         Distortion,
         BitCrusher,
+        WaveFolder,
         RingMod,
+        EnvFilter,
+        Freeze,
         Tone,
         Pitch,
         Phaser,
@@ -169,6 +175,9 @@ private:
     Fuzz fuzz_;
     Distortion distortion_;
     BitCrusher bit_crusher_;
+    WaveFolder wave_folder_;
+    EnvFilter env_filter_;
+    Freeze freeze_;
     RingMod ring_mod_;
     Tone tone_;
     PitchShifter pitch_;

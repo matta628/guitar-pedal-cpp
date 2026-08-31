@@ -29,7 +29,9 @@ add_library(pedal_dsp STATIC
   src/Compressor.cpp
   src/Delay.cpp
   src/Distortion.cpp
+  src/EnvFilter.cpp
   src/Flanger.cpp
+  src/Freeze.cpp
   src/Fuzz.cpp
   src/LedPattern.cpp
   src/Looper.cpp
@@ -44,6 +46,7 @@ add_library(pedal_dsp STATIC
   src/Telemetry.cpp
   src/Tone.cpp
   src/Tremolo.cpp
+  src/WaveFolder.cpp
 )
 target_include_directories(pedal_dsp PUBLIC include)
 

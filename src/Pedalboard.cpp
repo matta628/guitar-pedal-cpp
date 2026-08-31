@@ -14,6 +14,9 @@ const char* stage_group_name(Pedalboard::StageId id) {
         case Pedalboard::StageId::Fuzz:       return "Fuzz";
         case Pedalboard::StageId::Distortion: return "Drive";
         case Pedalboard::StageId::BitCrusher: return "Bit Crusher";
+        case Pedalboard::StageId::WaveFolder: return "Wave Folder";
+        case Pedalboard::StageId::EnvFilter: return "Env Filter";
+        case Pedalboard::StageId::Freeze: return "Freeze";
         case Pedalboard::StageId::RingMod:    return "Ring Mod";
         case Pedalboard::StageId::Tone:       return "Tone";
         case Pedalboard::StageId::Pitch:      return "Pitch";
@@ -29,8 +32,12 @@ const char* stage_group_name(Pedalboard::StageId id) {
 }
 
 Pedalboard::Pedalboard(float sample_rate)
-    : flanger_(sample_rate),
+    // Order matches the member declarations in the header, which is the order
+    // they are actually constructed in regardless of what is written here.
+    : env_filter_(sample_rate),
+      freeze_(sample_rate),
       pitch_(sample_rate),
+      flanger_(sample_rate),
       chorus_(sample_rate),
       delay_(sample_rate),
       reverb_(sample_rate) {
@@ -55,6 +62,9 @@ Effect* Pedalboard::stage(StageId id) {
         case StageId::Fuzz:       return &fuzz_;
         case StageId::Distortion: return &distortion_;
         case StageId::BitCrusher: return &bit_crusher_;
+        case StageId::WaveFolder: return &wave_folder_;
+        case StageId::EnvFilter: return &env_filter_;
+        case StageId::Freeze: return &freeze_;
         case StageId::RingMod:    return &ring_mod_;
         case StageId::Tone:       return &tone_;
         case StageId::Pitch:      return &pitch_;
@@ -132,6 +142,43 @@ void Pedalboard::build_params() {
         [this](float v) { bit_crusher_.set_downsample(v); });
     add("crush.mix", S::BitCrusher, "Mix", 0.0f, 1.0f,
         [this] { return bit_crusher_.mix(); }, [this](float v) { bit_crusher_.set_mix(v); });
+
+    add("fold.drive", S::WaveFolder, "Fold", 1.0f, 20.0f,
+        [this] { return wave_folder_.drive(); }, [this](float v) { wave_folder_.set_drive(v); });
+    add("fold.symmetry", S::WaveFolder, "Symmetry", -0.5f, 0.5f,
+        [this] { return wave_folder_.symmetry(); },
+        [this](float v) { wave_folder_.set_symmetry(v); });
+    add("fold.level", S::WaveFolder, "Level", 0.0f, 2.0f,
+        [this] { return wave_folder_.level(); }, [this](float v) { wave_folder_.set_level(v); });
+    add("fold.mix", S::WaveFolder, "Mix", 0.0f, 1.0f,
+        [this] { return wave_folder_.mix(); }, [this](float v) { wave_folder_.set_mix(v); });
+
+    add("env.base", S::EnvFilter, "Base Hz", 80.0f, 1500.0f,
+        [this] { return env_filter_.base_hz(); }, [this](float v) { env_filter_.set_base_hz(v); });
+    add("env.range", S::EnvFilter, "Sweep Hz", 0.0f, 6000.0f,
+        [this] { return env_filter_.range_hz(); },
+        [this](float v) { env_filter_.set_range_hz(v); });
+    add("env.sens", S::EnvFilter, "Sensitivity", -2.0f, 4.0f,
+        [this] { return env_filter_.sensitivity(); },
+        [this](float v) { env_filter_.set_sensitivity(v); });
+    add("env.q", S::EnvFilter, "Resonance", 0.5f, 12.0f,
+        [this] { return env_filter_.resonance(); },
+        [this](float v) { env_filter_.set_resonance(v); });
+    add("env.attack", S::EnvFilter, "Attack ms", 0.5f, 200.0f,
+        [this] { return env_filter_.attack_ms(); },
+        [this](float v) { env_filter_.set_attack_ms(v); });
+    add("env.release", S::EnvFilter, "Release ms", 5.0f, 2000.0f,
+        [this] { return env_filter_.release_ms(); },
+        [this](float v) { env_filter_.set_release_ms(v); });
+    add("env.mix", S::EnvFilter, "Mix", 0.0f, 1.0f,
+        [this] { return env_filter_.mix(); }, [this](float v) { env_filter_.set_mix(v); });
+
+    add("freeze.grain", S::Freeze, "Grain ms", 40.0f, 1500.0f,
+        [this] { return freeze_.grain_ms(); }, [this](float v) { freeze_.set_grain_ms(v); });
+    add("freeze.level", S::Freeze, "Pad level", 0.0f, 2.0f,
+        [this] { return freeze_.level(); }, [this](float v) { freeze_.set_level(v); });
+    add("freeze.decay", S::Freeze, "Hold", 0.9f, 1.0f,
+        [this] { return freeze_.decay(); }, [this](float v) { freeze_.set_decay(v); });
 
     add("ring.freq", S::RingMod, "Carrier Hz", 1.0f, 4000.0f,
         [this] { return ring_mod_.frequency_hz(); },

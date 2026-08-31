@@ -219,6 +219,37 @@ void test_looper_overdub_layers_and_decays() {
 }
 
 
+void test_looper_level_scales_playback_not_storage() {
+    Looper looper(48000.0f);
+    std::vector<float> buf(4, 0.0f);
+
+    // Record a loop of 1.0 ...
+    looper.on_trigger();
+    std::fill(buf.begin(), buf.end(), 1.0f);
+    looper.process(buf.data(), buf.size());
+    looper.on_trigger();  // -> Playing
+
+    // ... then play it back at half volume against silence.
+    looper.set_level(0.5f);
+    std::fill(buf.begin(), buf.end(), 0.0f);
+    looper.process(buf.data(), buf.size());
+    check(std::fabs(buf[0] - 0.5f) < 1e-6f, "Looper: level scales playback");
+
+    // Silencing the loop must not erase it: overdub a pass at level 0, then
+    // restore level and the original material has to still be there.
+    looper.set_level(0.0f);
+    looper.on_trigger();  // -> Overdubbing
+    std::fill(buf.begin(), buf.end(), 0.0f);
+    looper.process(buf.data(), buf.size());
+    check(std::fabs(buf[0]) < 1e-6f, "Looper: level 0 is silent");
+
+    looper.on_trigger();  // -> Playing
+    looper.set_level(1.0f);
+    std::fill(buf.begin(), buf.end(), 0.0f);
+    looper.process(buf.data(), buf.size());
+    check(buf[0] > 0.9f, "Looper: a pass at level 0 did not erase the loop");
+}
+
 void test_click_detector_single_and_double() {
     using Clock = ClickDetector::Clock;
     using std::chrono::milliseconds;
@@ -1031,6 +1062,7 @@ int main() {
     test_looper_record_and_play_back();
     test_looper_overdub_layers_and_decays();
     test_click_detector_single_and_double();
+    test_looper_level_scales_playback_not_storage();
     test_led_pattern_base_modes();
     test_led_pattern_burst_overrides_then_releases();
     test_telemetry_levels_and_timing();

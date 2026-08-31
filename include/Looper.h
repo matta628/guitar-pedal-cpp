@@ -25,12 +25,19 @@ public:
 
     void set_overdub_decay(float decay);
 
+    // Playback level for the recorded loop, 0 = silent, 1 = unity. Applies to
+    // what you HEAR, never to what is stored: turning it down while
+    // overdubbing must not quietly erase the loop.
+    void set_level(float level);
+
     // Reads the state published at the end of the last process() call, so a
     // non-audio thread (the LED indicator loop) can poll it without racing
     // the audio thread's plain state_ member.
     State state() const { return published_state_.load(std::memory_order_relaxed); }
 
     float overdub_decay() const { return overdub_decay_.load(std::memory_order_relaxed); }
+
+    float level() const { return level_.load(std::memory_order_relaxed); }
 
     // Published alongside state() at the end of each process() call, for the
     // same reason: an observer thread must not read the audio thread's plain
@@ -54,4 +61,5 @@ private:
     std::atomic<bool> trigger_pending_{false};
     std::atomic<bool> clear_pending_{false};
     std::atomic<float> overdub_decay_{0.98f};
+    std::atomic<float> level_{1.0f};
 };

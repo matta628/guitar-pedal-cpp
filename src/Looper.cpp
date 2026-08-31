@@ -13,6 +13,10 @@ void Looper::set_overdub_decay(float decay) {
     overdub_decay_.store(std::clamp(decay, 0.0f, 1.0f), std::memory_order_relaxed);
 }
 
+void Looper::set_level(float level) {
+    level_.store(level < 0.0f ? 0.0f : level, std::memory_order_relaxed);
+}
+
 void Looper::process(float* buffer, std::size_t n_frames) {
     if (clear_pending_.exchange(false, std::memory_order_relaxed)) {
         write_index_ = 0;
@@ -41,6 +45,7 @@ void Looper::process(float* buffer, std::size_t n_frames) {
     }
 
     const float decay = overdub_decay_.load(std::memory_order_relaxed);
+    const float level = level_.load(std::memory_order_relaxed);
 
     for (std::size_t i = 0; i < n_frames; ++i) {
         if (state_ == State::Recording) {
@@ -53,12 +58,15 @@ void Looper::process(float* buffer, std::size_t n_frames) {
                 state_ = State::Playing;
             }
         } else if (state_ == State::Playing && loop_length_ > 0) {
-            buffer[i] += buffer_[read_index_];
+            buffer[i] += buffer_[read_index_] * level;
             read_index_ = (read_index_ + 1) % loop_length_;
         } else if (state_ == State::Overdubbing && loop_length_ > 0) {
             const float existing = buffer_[read_index_];
+            // The stored signal is deliberately scaled by decay only, never by
+            // level: what is written back has to be independent of monitoring
+            // volume, or turning the loop down would erase it a pass at a time.
             buffer_[read_index_] = existing * decay + buffer[i];
-            buffer[i] += existing;
+            buffer[i] += existing * level;
             read_index_ = (read_index_ + 1) % loop_length_;
         }
     }

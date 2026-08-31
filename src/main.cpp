@@ -627,6 +627,9 @@ int main(int argc, char** argv) {
         for (const auto& p : chain.board.params()) {
             params.push_back({p.id, p.group, p.label, p.min, p.max, p.get, p.set});
         }
+        params.push_back({"looper.level", "Looper", "Loop volume", 0.0f, 1.5f,
+                          [&] { return chain.looper.level(); },
+                          [&](float v) { chain.looper.set_level(v); }});
         params.push_back({"looper.decay", "Looper", "Overdub decay", 0.5f, 1.0f,
                           [&] { return chain.looper.overdub_decay(); },
                           [&](float v) { chain.looper.set_overdub_decay(v); }});

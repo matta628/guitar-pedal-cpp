@@ -38,16 +38,51 @@
   .pill.bad { color: var(--bad); border-color: #4d2020; background: #2a1212; }
   .pill.warn { color: var(--warn); border-color: #4d3f18; background: #2a2311; }
 
+  /* Three fixed regions rather than an auto-fit flow: the old grid let the
+     browser decide which panel landed where, so the layout reshuffled with the
+     window width and nothing had a stable home. Settings live left, the things
+     you watch while playing live centre, the numbers live right. */
   main {
-    display: grid; gap: 14px; padding: 14px 18px 40px;
-    grid-template-columns: repeat(auto-fit, minmax(330px, 1fr));
+    display: grid; gap: 14px; padding: 14px 18px 24px;
+    grid-template-columns: 300px minmax(0, 1fr) 290px;
     align-items: start;
+  }
+  .col { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+  /* The parameter list is the only thing tall enough to need its own scroll;
+     letting it scroll keeps everything else on one screen. */
+  .col-left {
+    position: sticky; top: 57px;
+    max-height: calc(100vh - 71px); overflow-y: auto;
+    scrollbar-width: thin;
+  }
+  @media (max-width: 1180px) {
+    main { grid-template-columns: 1fr; }
+    .col-left { position: static; max-height: none; overflow: visible; }
   }
   section {
     background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
     padding: 12px 14px 14px;
   }
   section.wide { grid-column: 1 / -1; }
+
+  /* Effect picker: 34 presets is far too many to sit open above the scope. */
+  details.fx { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
+  details.fx > summary {
+    list-style: none; cursor: pointer; padding: 12px 14px;
+    display: flex; align-items: center; gap: 10px;
+  }
+  details.fx > summary::-webkit-details-marker { display: none; }
+  details.fx > summary::before {
+    content: "\25B8"; color: var(--dim); transition: transform .12s ease;
+  }
+  details.fx[open] > summary::before { transform: rotate(90deg); }
+  .fx-label {
+    font-size: 11px; letter-spacing: .12em; text-transform: uppercase;
+    color: var(--dim); font-weight: 600;
+  }
+  .fx-current { color: var(--accent); font-weight: 600; }
+  .fx-body { padding: 0 14px 14px; }
+  #presets { max-height: 240px; overflow-y: auto; scrollbar-width: thin; }
   h2 {
     margin: 0 0 10px; font-size: 11px; letter-spacing: .12em; text-transform: uppercase;
     color: var(--dim); font-weight: 600;
@@ -135,93 +170,97 @@
 
 <main>
 
-  <section>
-    <h2>Effect</h2>
-    <div class="row" id="presets"></div>
-    <p class="muted" id="preset-hint" style="margin:10px 0 0;font-size:11px">
-      Selected directly here — there is no footswitch for the effect chain.
-    </p>
-  </section>
+  <div class="col col-left">
+    <section>
+      <h2>Parameters</h2>
+      <div id="params"></div>
+    </section>
+  </div>
 
-  <section>
-    <h2>Looper</h2>
-    <span id="loop-state" class="state-badge state-EMPTY">EMPTY</span>
-    <div class="loop-bar"><div class="fill" id="loop-fill"></div><div class="head" id="loop-head"></div></div>
-    <div class="scale"><span id="loop-pos">0.00 s</span><span id="loop-len">no loop</span></div>
-    <div class="row" style="margin-top:10px">
-      <button class="big" id="btn-trigger">Trigger</button>
-      <button class="big" id="btn-clear">Clear</button>
-    </div>
-    <p class="muted" style="margin:8px 0 0;font-size:11px">
-      Trigger drives the same state machine as the looper footswitch:
-      empty &rarr; record &rarr; play &rarr; overdub &rarr; play.
-    </p>
-  </section>
+  <div class="col col-mid">
+    <details class="fx" id="fx-picker" open>
+      <summary>
+        <span class="fx-label">Effect</span>
+        <span class="fx-current" id="fx-current">Clean</span>
+      </summary>
+      <div class="fx-body">
+        <div class="row" id="presets"></div>
+        <p class="muted" id="preset-hint" style="margin:10px 0 0;font-size:11px"></p>
+      </div>
+    </details>
+    <section>
+      <h2>Waveform &mdash; <span class="muted">dim = input, bright = output</span></h2>
+      <canvas id="scope"></canvas>
+    </section>
+    <section>
+      <h2>Control surface</h2>
+      <div class="lcd"><span id="lcd0">                </span><br><span id="lcd1">                </span></div>
+      <div class="row" style="margin-top:10px">
+        <span class="pill" id="gp-looper">looper switch</span>
+        <span class="pill" id="gp-leds">LEDs</span>
+        <span class="pill" id="gp-lcd">LCD1602</span>
+      </div>
+      <dl class="kv" style="margin-top:10px">
+        <dt>input device</dt><dd id="dev-in">-</dd>
+        <dt>output device</dt><dd id="dev-out">-</dd>
+      </dl>
+    </section>
+    <section>
+      <h2>Event log</h2>
+      <div class="log" id="log"></div>
+    </section>
+  </div>
 
-  <section>
-    <h2>Levels</h2>
-    <div class="meter">
-      <div class="meter-head"><span>Input <span class="muted">(guitar in)</span></span>
-        <span><b id="in-peak-db">-inf</b> peak / <span id="in-rms-db">-inf</span> rms dBFS</span></div>
-      <div class="bar"><div class="rms" id="in-rms"></div><div class="peak" id="in-peak"></div><div class="ticks"></div></div>
-    </div>
-    <div class="meter">
-      <div class="meter-head"><span>Output <span class="muted">(post-DSP)</span></span>
-        <span><b id="out-peak-db">-inf</b> peak / <span id="out-rms-db">-inf</span> rms dBFS</span></div>
-      <div class="bar"><div class="rms" id="out-rms"></div><div class="peak" id="out-peak"></div><div class="ticks"></div></div>
-    </div>
-    <div class="scale"><span>-60</span><span>-50</span><span>-40</span><span>-30</span><span>-20</span><span>-10</span><span>0 dB</span></div>
-    <div class="row" style="margin-top:10px">
-      <span id="clips" class="pill">clips 0</span>
-      <button id="btn-reset">Reset counters</button>
-      <button id="btn-sim">Simulate input</button>
-    </div>
-  </section>
-
-  <section class="wide">
-    <h2>Waveform &mdash; <span class="muted">dim = input, bright = output</span></h2>
-    <canvas id="scope"></canvas>
-  </section>
-
-  <section>
-    <h2>Deadline</h2>
-    <div class="meter">
-      <div class="meter-head"><span>Callback time vs. budget</span><span><b id="pct">-</b></span></div>
-      <div class="bar"><div class="rms" id="load-avg"></div><div class="peak" id="load-max"></div><div class="ticks"></div></div>
-    </div>
-    <dl class="kv">
-      <dt>budget / buffer</dt><dd id="budget">-</dd>
-      <dt>last</dt><dd id="us-last">-</dd>
-      <dt>average</dt><dd id="us-avg">-</dd>
-      <dt>worst</dt><dd id="us-max">-</dd>
-      <dt>buffers processed</dt><dd id="blocks">0</dd>
-      <dt>xruns</dt><dd id="xruns2">0</dd>
-    </dl>
-  </section>
-
-  <section>
-    <h2>Parameters</h2>
-    <div id="params"></div>
-  </section>
-
-  <section>
-    <h2>Control surface</h2>
-    <div class="lcd"><span id="lcd0">                </span><br><span id="lcd1">                </span></div>
-    <div class="row" style="margin-top:10px">
-      <span class="pill" id="gp-looper">looper switch</span>
-      <span class="pill" id="gp-leds">LEDs</span>
-      <span class="pill" id="gp-lcd">LCD1602</span>
-    </div>
-    <dl class="kv" style="margin-top:10px">
-      <dt>input device</dt><dd id="dev-in">-</dd>
-      <dt>output device</dt><dd id="dev-out">-</dd>
-    </dl>
-  </section>
-
-  <section class="wide">
-    <h2>Event log</h2>
-    <div class="log" id="log"></div>
-  </section>
+  <div class="col col-right">
+    <section>
+      <h2>Levels</h2>
+      <div class="meter">
+        <div class="meter-head"><span>Input <span class="muted">(guitar in)</span></span>
+          <span><b id="in-peak-db">-inf</b> peak / <span id="in-rms-db">-inf</span> rms dBFS</span></div>
+        <div class="bar"><div class="rms" id="in-rms"></div><div class="peak" id="in-peak"></div><div class="ticks"></div></div>
+      </div>
+      <div class="meter">
+        <div class="meter-head"><span>Output <span class="muted">(post-DSP)</span></span>
+          <span><b id="out-peak-db">-inf</b> peak / <span id="out-rms-db">-inf</span> rms dBFS</span></div>
+        <div class="bar"><div class="rms" id="out-rms"></div><div class="peak" id="out-peak"></div><div class="ticks"></div></div>
+      </div>
+      <div class="scale"><span>-60</span><span>-50</span><span>-40</span><span>-30</span><span>-20</span><span>-10</span><span>0 dB</span></div>
+      <div class="row" style="margin-top:10px">
+        <span id="clips" class="pill">clips 0</span>
+        <button id="btn-reset">Reset counters</button>
+        <button id="btn-sim">Simulate input</button>
+      </div>
+    </section>
+    <section>
+      <h2>Looper</h2>
+      <span id="loop-state" class="state-badge state-EMPTY">EMPTY</span>
+      <div class="loop-bar"><div class="fill" id="loop-fill"></div><div class="head" id="loop-head"></div></div>
+      <div class="scale"><span id="loop-pos">0.00 s</span><span id="loop-len">no loop</span></div>
+      <div class="row" style="margin-top:10px">
+        <button class="big" id="btn-trigger">Trigger</button>
+        <button class="big" id="btn-clear">Clear</button>
+      </div>
+      <p class="muted" style="margin:8px 0 0;font-size:11px">
+        Trigger drives the same state machine as the looper footswitch:
+        empty &rarr; record &rarr; play &rarr; overdub &rarr; play.
+      </p>
+    </section>
+    <section>
+      <h2>Deadline</h2>
+      <div class="meter">
+        <div class="meter-head"><span>Callback time vs. budget</span><span><b id="pct">-</b></span></div>
+        <div class="bar"><div class="rms" id="load-avg"></div><div class="peak" id="load-max"></div><div class="ticks"></div></div>
+      </div>
+      <dl class="kv">
+        <dt>budget / buffer</dt><dd id="budget">-</dd>
+        <dt>last</dt><dd id="us-last">-</dd>
+        <dt>average</dt><dd id="us-avg">-</dd>
+        <dt>worst</dt><dd id="us-max">-</dd>
+        <dt>buffers processed</dt><dd id="blocks">0</dd>
+        <dt>xruns</dt><dd id="xruns2">0</dd>
+      </dl>
+    </section>
+  </div>
 
 </main>
 
@@ -276,7 +315,10 @@ async function loadConfig() {
     // Hover shows what the preset is going for, and the gear it is imitating.
     b.title = p.gear && p.gear !== "\u2014" ? p.blurb + "\n\n" + p.gear : p.blurb;
     b.dataset.preset = String(i);
-    b.onclick = () => post("/api/preset", { value: i });
+    b.onclick = () => {
+      post("/api/preset", { value: i });
+      $("fx-picker").open = false;
+    };
     holder.appendChild(b);
   });
 
@@ -328,6 +370,9 @@ function render(s) {
   if (sel) {
     const gear = sel.gear && sel.gear !== "\u2014" ? " \u2014 " + sel.gear : "";
     $("preset-hint").textContent = sel.blurb + gear;
+    // The picker is collapsible, so its summary has to carry the current
+    // preset -- otherwise closing it hides which effect is running.
+    $("fx-current").textContent = sel.name;
   }
 
   const badge = $("loop-state");

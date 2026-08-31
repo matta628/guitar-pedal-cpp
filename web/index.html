@@ -154,6 +154,14 @@
   .fx-label { font-size: 11px; letter-spacing: .13em; text-transform: uppercase; color: var(--dim); font-weight: 650; }
   .fx-current { color: var(--accent); font-weight: 650; font-size: 15px; }
   .fx-body { padding: 0 15px 15px; }
+  .grip {
+    cursor: grab; color: var(--dim); font-size: 15px; line-height: 1;
+    padding: 0 7px 0 0; margin-right: 2px; touch-action: none;
+    letter-spacing: 1px; user-select: none;
+  }
+  .grip:hover { color: var(--text); }
+  .col-mid > .dragging { opacity: .45; }
+  .col-mid > .drop-target { box-shadow: 0 -2px 0 0 var(--accent); }
   .note-box { margin-top: 12px; }
   .note-box textarea {
     width: 100%; resize: vertical; margin-top: 6px;
@@ -367,8 +375,45 @@ Shortcuts are ignored while a slider or text box has focus.">? keys</span>
   <!-- =========================================================== MIDDLE -->
   <div class="col col-mid">
 
-    <details class="fx" id="fx-picker">
-      <summary>
+
+
+    <section data-panel="surface">
+      <h2 tabindex="0" data-tip-title="Control surface"
+          data-tip="A mirror of the physical panel wired to the Pi's GPIO pins: the 16x2 character LCD, the two footswitches and the status LEDs. The pills below are lit when that piece of hardware was found at boot — so the browser shows the panel even on a board with nothing soldered to it."><span class="grip" data-tip-title="Drag to reorder" data-tip="Drag this panel to a new position in the column. The order is remembered in this browser." aria-hidden="true">⁙</span>
+        Control surface <span class="i" aria-hidden="true">i</span>
+      </h2>
+      <div class="lcd"><span id="lcd0">                </span><br><span id="lcd1">                </span></div>
+      <div class="row" style="margin-top:11px">
+        <span class="pill" id="gp-looper" data-tip-title="Looper footswitch"
+              data-tip="The primary footswitch, handled with no debounce delay on the press edge: the instant your foot lands is the loop boundary, so it must never wait to see whether a second tap is coming.">looper switch</span>
+        <span class="pill" id="gp-leds" data-tip-title="Status LEDs"
+              data-tip="Two indicator LEDs. The looper LED is off when empty, solid while recording, slow-blinking while playing and fast-blinking while overdubbing. The preset LED flashes twice when the preset changes and once, long, when the loop is cleared.">LEDs</span>
+        <span class="pill" id="gp-lcd" data-tip-title="LCD1602"
+              data-tip="A 16x2 character display driven over GPIO. The text above is the exact same two strings the physical panel is given.">LCD1602</span>
+      </div>
+      <dl class="kv" style="margin-top:11px">
+        <dt data-tip-title="Input device"
+            data-tip="The USB audio interface the guitar is plugged into. Its own input-gain knob is the right place to fix a hot signal — turning it down there prevents clipping, whereas turning anything down in software happens after the damage.">input device</dt>
+        <dd id="dev-in">-</dd>
+        <dt>output device</dt><dd id="dev-out">-</dd>
+      </dl>
+    </section>
+
+    <section data-panel="scope">
+      <h2 tabindex="0" data-tip-title="Waveform"
+          data-tip="A 2048-frame window of the signal, sampled every 4th frame and redrawn about 15 times a second. At 48 kHz that window is ~43 ms — roughly two cycles of a low E string.&#10;&#10;It is pulled by the browser rather than pushed, and read out of a lock-free buffer, so a slow browser can never stall the audio thread. Vertical range is -1.2 to +1.2; a trace flat against the top or bottom is clipping."><span class="grip" data-tip-title="Drag to reorder" data-tip="Drag this panel to a new position in the column. The order is remembered in this browser." aria-hidden="true">⁙</span>
+        Waveform <span class="i" aria-hidden="true">i</span>
+      </h2>
+      <canvas id="scope" aria-label="Input and output waveform"></canvas>
+      <div class="legend">
+        <span><i style="background:#3f6d8f"></i>input (dry, straight off the guitar)</span>
+        <span><i style="background:#6ee7b7"></i>output (after every DSP stage)</span>
+      </div>
+    </section>
+
+
+    <details data-panel="effect" class="fx" id="fx-picker">
+      <summary><span class="grip" data-tip-title="Drag to reorder" data-tip="Drag this panel to a new position in the column. The order is remembered in this browser." aria-hidden="true">⁙</span>
         <span class="fx-label">Effect</span>
         <span class="fx-current" id="fx-current">Clean</span>
         <span class="pill warn" id="preset-mod" hidden data-tip-title="Edited preset"
@@ -401,45 +446,9 @@ Shortcuts are ignored while a slider or text box has focus.">? keys</span>
       </div>
     </details>
 
-
-    <section>
-      <h2 tabindex="0" data-tip-title="Control surface"
-          data-tip="A mirror of the physical panel wired to the Pi's GPIO pins: the 16x2 character LCD, the two footswitches and the status LEDs. The pills below are lit when that piece of hardware was found at boot — so the browser shows the panel even on a board with nothing soldered to it.">
-        Control surface <span class="i" aria-hidden="true">i</span>
-      </h2>
-      <div class="lcd"><span id="lcd0">                </span><br><span id="lcd1">                </span></div>
-      <div class="row" style="margin-top:11px">
-        <span class="pill" id="gp-looper" data-tip-title="Looper footswitch"
-              data-tip="The primary footswitch, handled with no debounce delay on the press edge: the instant your foot lands is the loop boundary, so it must never wait to see whether a second tap is coming.">looper switch</span>
-        <span class="pill" id="gp-leds" data-tip-title="Status LEDs"
-              data-tip="Two indicator LEDs. The looper LED is off when empty, solid while recording, slow-blinking while playing and fast-blinking while overdubbing. The preset LED flashes twice when the preset changes and once, long, when the loop is cleared.">LEDs</span>
-        <span class="pill" id="gp-lcd" data-tip-title="LCD1602"
-              data-tip="A 16x2 character display driven over GPIO. The text above is the exact same two strings the physical panel is given.">LCD1602</span>
-      </div>
-      <dl class="kv" style="margin-top:11px">
-        <dt data-tip-title="Input device"
-            data-tip="The USB audio interface the guitar is plugged into. Its own input-gain knob is the right place to fix a hot signal — turning it down there prevents clipping, whereas turning anything down in software happens after the damage.">input device</dt>
-        <dd id="dev-in">-</dd>
-        <dt>output device</dt><dd id="dev-out">-</dd>
-      </dl>
-    </section>
-
-    <section>
-      <h2 tabindex="0" data-tip-title="Waveform"
-          data-tip="A 2048-frame window of the signal, sampled every 4th frame and redrawn about 15 times a second. At 48 kHz that window is ~43 ms — roughly two cycles of a low E string.&#10;&#10;It is pulled by the browser rather than pushed, and read out of a lock-free buffer, so a slow browser can never stall the audio thread. Vertical range is -1.2 to +1.2; a trace flat against the top or bottom is clipping.">
-        Waveform <span class="i" aria-hidden="true">i</span>
-      </h2>
-      <canvas id="scope" aria-label="Input and output waveform"></canvas>
-      <div class="legend">
-        <span><i style="background:#3f6d8f"></i>input (dry, straight off the guitar)</span>
-        <span><i style="background:#6ee7b7"></i>output (after every DSP stage)</span>
-      </div>
-    </section>
-
-
-    <section>
+    <section data-panel="setlist">
       <h2 tabindex="0" data-tip-title="Setlist"
-          data-tip="The ordered shortlist of presets the utility footswitch walks, one stomp at a time.&#10;&#10;Cycling all 34 presets by foot is unusable — reaching one sound can cost thirty stomps. A setlist cycles only what you picked for tonight, in the order you picked it.&#10;&#10;On the pedal: tap the utility switch to clear the loop, double-tap to step to the next preset in this list. Picking a preset in the browser also moves the footswitch's place in the list, so the next stomp carries on from what you are actually hearing.">
+          data-tip="The ordered shortlist of presets the utility footswitch walks, one stomp at a time.&#10;&#10;Cycling all 34 presets by foot is unusable — reaching one sound can cost thirty stomps. A setlist cycles only what you picked for tonight, in the order you picked it.&#10;&#10;On the pedal: tap the utility switch to clear the loop, double-tap to step to the next preset in this list. Picking a preset in the browser also moves the footswitch's place in the list, so the next stomp carries on from what you are actually hearing."><span class="grip" data-tip-title="Drag to reorder" data-tip="Drag this panel to a new position in the column. The order is remembered in this browser." aria-hidden="true">⁙</span>
         Setlist <span class="i" aria-hidden="true">i</span>
         <span class="pill" id="gp-util">utility switch</span>
         <span class="spacer"></span>
@@ -465,9 +474,9 @@ Shortcuts are ignored while a slider or text box has focus.">? keys</span>
       <p class="hint" id="setlist-hint"></p>
     </section>
 
-    <section>
+    <section data-panel="log">
       <h2 tabindex="0" data-tip-title="Event log"
-          data-tip="What the pedal has done, newest first: preset changes, looper actions, saves and errors. The audio thread never writes here — appending takes a mutex, which is exactly why it is forbidden inside the callback.">
+          data-tip="What the pedal has done, newest first: preset changes, looper actions, saves and errors. The audio thread never writes here — appending takes a mutex, which is exactly why it is forbidden inside the callback."><span class="grip" data-tip-title="Drag to reorder" data-tip="Drag this panel to a new position in the column. The order is remembered in this browser." aria-hidden="true">⁙</span>
         Event log <span class="i" aria-hidden="true">i</span>
       </h2>
       <div class="log" id="log"></div>
@@ -1096,6 +1105,71 @@ function stepSetlist(dir) {
   post("/api/preset", { value: setlist[k] });
 }
 
+/* ------------------------------------------------------ panel ordering -- */
+// Pointer events rather than HTML5 drag-and-drop: DnD does not fire on touch
+// without a polyfill, and this page has to work from a phone on the same LAN.
+const PANEL_ORDER_KEY = "pedal.panelOrder";
+
+function panelColumn() { return document.querySelector(".col-mid"); }
+
+function savePanelOrder() {
+  const ids = [...panelColumn().children].map((el) => el.dataset.panel).filter(Boolean);
+  try { localStorage.setItem(PANEL_ORDER_KEY, JSON.stringify(ids)); } catch (e) { /* private mode */ }
+}
+
+function restorePanelOrder() {
+  let ids = null;
+  try { ids = JSON.parse(localStorage.getItem(PANEL_ORDER_KEY) || "null"); } catch (e) { ids = null; }
+  if (!Array.isArray(ids)) return;
+  const col = panelColumn();
+  // Append in saved order; anything the saved list does not mention (a panel
+  // added by a later build) keeps its place at the end rather than vanishing.
+  for (const id of ids) {
+    const el = col.querySelector(':scope > [data-panel="' + CSS.escape(id) + '"]');
+    if (el) col.appendChild(el);
+  }
+}
+
+function initPanelDragging() {
+  const col = panelColumn();
+  let dragged = null;
+
+  col.addEventListener("pointerdown", (e) => {
+    const grip = e.target.closest(".grip");
+    if (!grip) return;
+    dragged = grip.closest("[data-panel]");
+    if (!dragged || dragged.parentElement !== col) { dragged = null; return; }
+    e.preventDefault();                    // do not toggle <details> or select text
+    grip.setPointerCapture(e.pointerId);
+    dragged.classList.add("dragging");
+  });
+
+  col.addEventListener("pointermove", (e) => {
+    if (!dragged) return;
+    const siblings = [...col.children].filter((el) => el !== dragged && el.dataset.panel);
+    let before = null;
+    for (const el of siblings) {
+      const box = el.getBoundingClientRect();
+      if (e.clientY < box.top + box.height / 2) { before = el; break; }
+    }
+    siblings.forEach((el) => el.classList.remove("drop-target"));
+    if (before) before.classList.add("drop-target");
+    // Move live rather than on drop, so the layout shows the result as you go.
+    if (before !== dragged.nextElementSibling) col.insertBefore(dragged, before);
+  });
+
+  const finish = () => {
+    if (!dragged) return;
+    dragged.classList.remove("dragging");
+    [...col.children].forEach((el) => el.classList.remove("drop-target"));
+    dragged = null;
+    savePanelOrder();
+    fitCanvas();                            // the scope may have changed width
+  };
+  col.addEventListener("pointerup", finish);
+  col.addEventListener("pointercancel", finish);
+}
+
 /* -------------------------------------------------------------- notes -- */
 let notes = [];
 let noteShownFor = -1;
@@ -1395,6 +1469,8 @@ function connect() {
   };
 }
 
+restorePanelOrder();
+initPanelDragging();
 makeTipsReachable();
 fitCanvas();
 $("preset-note").addEventListener("blur", saveNote);

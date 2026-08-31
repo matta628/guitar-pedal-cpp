@@ -270,9 +270,11 @@ async function loadConfig() {
 
   const holder = $("presets");
   holder.innerHTML = "";
-  cfg.presets.forEach((name, i) => {
+  cfg.presets.forEach((p, i) => {
     const b = document.createElement("button");
-    b.textContent = name;
+    b.textContent = p.name;
+    // Hover shows what the preset is going for, and the gear it is imitating.
+    b.title = p.gear && p.gear !== "\u2014" ? p.blurb + "\n\n" + p.gear : p.blurb;
     b.dataset.preset = String(i);
     b.onclick = () => post("/api/preset", { value: i });
     holder.appendChild(b);
@@ -321,6 +323,12 @@ function render(s) {
   document.querySelectorAll("#presets button").forEach((b) => {
     b.classList.toggle("on", Number(b.dataset.preset) === s.preset);
   });
+
+  const sel = cfg && cfg.presets && cfg.presets[s.preset];
+  if (sel) {
+    const gear = sel.gear && sel.gear !== "\u2014" ? " \u2014 " + sel.gear : "";
+    $("preset-hint").textContent = sel.blurb + gear;
+  }
 
   const badge = $("loop-state");
   badge.textContent = s.looper;

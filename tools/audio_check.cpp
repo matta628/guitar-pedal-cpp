@@ -449,7 +449,8 @@ int mode_meter(RtAudio& audio, const std::string& spec) {
 
     if (loudest < 1e-4f) {
         std::cout << "\nNothing arrived. The Pi opened the device but received silence, so the\n"
-                     "break is upstream: guitar cable, the Micro's own input, or its USB mode.\n";
+                     "break is upstream: guitar cable, guitar volume, the interface's input gain,\n"
+                     "or a Line/Inst switch still set to Line.\n";
         return 1;
     }
     std::cout << "\nGuitar reaches the Pi. Peak " << db_text(loudest) << " dBFS.\n";
@@ -480,10 +481,13 @@ int mode_tone(RtAudio& audio, const std::string& spec, double hz) {
         return 1;
     }
     std::cout << "Playing a " << hz << " Hz sine at -12 dBFS. You should hear it in the headphones.";
-    run_meter(state.levels, false, rate);
+    // `true` shows the `out` column. There is no input stream in this mode, so
+    // the input bar reads -inf forever -- without the out column a working tone
+    // and a dead one look identical on screen.
+    run_meter(state.levels, true, rate);
     close_stream(audio);
     std::cout << "\nIf that was silent, the Pi is generating audio but it is not reaching the\n"
-                 "headphones — wrong device, or the Micro is not in USB audio mode.\n";
+                 "headphones — wrong device, or the interface's headphone volume is down.\n";
     return 0;
 }
 
@@ -547,7 +551,7 @@ int mode_thru(RtAudio& audio, const std::string& out_spec, const std::string& in
                      "Run `audio_check meter` first to isolate the input side.\n";
         return 1;
     }
-    std::cout << "\nRound trip works: guitar → Micro → Pi → Micro → headphones.\n"
+    std::cout << "\nRound trip works: guitar → interface → Pi → interface → headphones.\n"
                  "That is the whole audio path proven. Everything after this is DSP.\n";
     return 0;
 }

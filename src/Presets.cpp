@@ -437,4 +437,63 @@ const std::vector<Pedalboard::PresetSpec>& table() {
 
 }  // namespace
 
+// Per-preset output trim, measured rather than guessed.
+//
+// The presets span nearly 30 dB: a fuzz into an amp is enormously louder than a
+// phaser, so switching between them was violent and the hot ones drove the
+// converter past full scale. Wednesday, Deftones and Cocteau Twins each clipped
+// tens of thousands of samples against a normal DI-level input.
+//
+// Produced by tools/preset_levels, which runs an identical decaying-pluck
+// signal through every preset and reports peak and RMS. Each trim is the
+// smaller of "bring RMS to -20 dBFS" and "keep peak under -3 dBFS", so loudness
+// is matched where it can be and headroom always wins where it cannot.
+//
+// Re-run that tool and regenerate this table whenever a preset's settings
+// change; the numbers are only true for the settings they were measured
+// against. There is a test that every preset has an entry.
+const std::unordered_map<std::string, float>& preset_trims() {
+    static const std::unordered_map<std::string, float> trims = {
+    {"clean", 1.718f},
+    {"amp", 0.394f},
+    {"slowdive", 0.569f},
+    {"elliott", 2.089f},
+    {"strokes", 0.211f},
+    {"arctic", 0.452f},
+    {"voidz", 0.733f},
+    {"wednesday", 0.146f},
+    {"zeppelin", 0.295f},
+    {"deftones", 0.133f},
+    {"velvet", 0.339f},
+    {"cocteau", 0.120f},
+    {"nirvana", 0.263f},
+    {"radiohead", 0.355f},
+    {"shoegaze", 1.349f},
+    {"overdrive", 0.372f},
+    {"fuzz", 0.288f},
+    {"compressor", 0.861f},
+    {"eq", 1.718f},
+    {"chorus", 2.344f},
+    {"flanger", 2.692f},
+    {"phaser", 2.917f},
+    {"tremolo", 2.399f},
+    {"delay", 2.541f},
+    {"tape", 2.317f},
+    {"room", 2.723f},
+    {"plate", 1.799f},
+    {"hall", 0.832f},
+    {"spring", 2.371f},
+    {"octave-up", 2.399f},
+    {"octave-down", 2.512f},
+    {"detune", 2.951f},
+    {"crusher", 1.718f},
+    {"ringmod", 2.188f},
+    {"folder", 0.653f},
+    {"autowah", 1.380f},
+    {"downwah", 0.977f},
+    {"funkfilter", 0.794f},
+    };
+    return trims;
+}
+
 const std::vector<Pedalboard::PresetSpec>& preset_table() { return table(); }

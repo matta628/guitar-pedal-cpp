@@ -96,6 +96,9 @@ add_executable(audio_check tools/audio_check.cpp)
 target_link_libraries(audio_check PRIVATE pedal_audio)
 
 enable_testing()
+add_executable(preset_levels tools/preset_levels.cpp)
+target_link_libraries(preset_levels PRIVATE pedal_dsp)
+
 add_executable(offline_tests tests/offline_tests.cpp)
 target_link_libraries(offline_tests PRIVATE pedal_dsp)
 add_test(NAME offline_tests COMMAND offline_tests)

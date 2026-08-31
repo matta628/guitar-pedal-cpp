@@ -266,6 +266,11 @@ void Pedalboard::build_presets() {
         preset.blurb = spec.blurb;
         preset.gear = spec.gear;
 
+        // Absent means 1.0 rather than an error: a preset added without being
+        // measured yet should still play, just unbalanced.
+        const auto trim_it = preset_trims().find(preset.id);
+        preset.trim = (trim_it == preset_trims().end()) ? 1.0f : trim_it->second;
+
         if (spec.chain.size() > kMaxChain) {
             throw std::runtime_error(std::string("preset '") + spec.id + "' exceeds kMaxChain");
         }
@@ -306,6 +311,12 @@ void Pedalboard::select(int index) {
     for (const auto& [param_index, value] : preset.overrides) {
         params_[param_index].set(value);
     }
+    // Published before the index, like the parameter values above and for the
+    // same reason: the audio thread may briefly run the new trim against the
+    // old chain, which is inaudible, whereas the reverse would run the new
+    // chain at the old preset's level -- which is exactly the 20 dB jump this
+    // exists to prevent.
+    trim_.store(preset.trim, std::memory_order_relaxed);
     current_.store(index, std::memory_order_relaxed);
 }
 
@@ -324,6 +335,15 @@ void Pedalboard::process(float* buffer, std::size_t n_frames) {
     for (std::size_t i = 0; i < preset.chain_length; ++i) {
         preset.chain[i]->process(buffer, n_frames);
     }
+
+    const float trim = trim_.load(std::memory_order_relaxed);
+    if (trim != 1.0f) {
+        for (std::size_t i = 0; i < n_frames; ++i) buffer[i] *= trim;
+    }
+}
+
+void Pedalboard::set_trim(float trim) {
+    trim_.store(std::clamp(trim, 0.0f, 4.0f), std::memory_order_relaxed);
 }
 
 // ---------------------------------------------------------------- user presets

@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <functional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "Amp.h"
@@ -117,6 +118,16 @@ public:
         // is an observation about a preset, not an edit to it, so writing one
         // must not make the UI claim the preset has been modified.
         std::string note;
+        // Output trim, applied after the whole chain. Presets differ by nearly
+        // 30 dB in level -- a fuzz into an amp is enormously louder than a
+        // phaser -- which makes switching between them violent and sends the
+        // hot ones past full scale at the converter. Measured with
+        // tools/preset_levels and baked into the table.
+        //
+        // Deliberately applied at the very END: the saturating stages are
+        // level-dependent, so trimming their input would change what they
+        // sound like. Trimming the output changes only how loud the result is.
+        float trim = 1.0f;
     };
 
     explicit Pedalboard(float sample_rate);
@@ -151,6 +162,10 @@ public:
     bool set_note(int index, std::string note, std::string* error = nullptr);
     std::string note(int index) const;
 
+    // The trim of whichever preset is selected, so the UI can show and edit it.
+    float trim() const { return trim_.load(std::memory_order_relaxed); }
+    void set_trim(float trim);
+
     const std::vector<Preset>& presets() const { return presets_; }
     const std::vector<Param>& params() const { return params_; }
     int preset_count() const { return static_cast<int>(presets_.size()); }
@@ -167,6 +182,8 @@ private:
     void build_presets();
     Effect* stage(StageId id);
     bool write_user_presets(std::string* error);
+
+    std::atomic<float> trim_{1.0f};
 
     Compressor compressor_;
     Amp amp_;
@@ -197,3 +214,7 @@ const char* stage_group_name(Pedalboard::StageId id);
 // The preset table. Defined in Presets.cpp, which is data rather than
 // mechanism and is meant to be read as the tone-research document's other half.
 const std::vector<Pedalboard::PresetSpec>& preset_table();
+
+// Measured output trims, keyed by preset id. See the comment above the table in
+// Presets.cpp for how they are produced and when to regenerate them.
+const std::unordered_map<std::string, float>& preset_trims();

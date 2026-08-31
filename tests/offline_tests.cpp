@@ -346,6 +346,30 @@ void test_freeze_holds_after_input_stops() {
     check(!f.frozen(), "Freeze: reports itself as released");
 }
 
+void test_every_preset_has_a_measured_trim() {
+    // The trims are produced by tools/preset_levels against the settings in the
+    // table. A preset added without being measured still plays -- the lookup
+    // defaults to 1.0 -- but it plays unbalanced, which is precisely the 30 dB
+    // problem the trims exist to remove. Better to fail here than to discover
+    // it by being deafened mid-song.
+    const auto& trims = preset_trims();
+    std::string missing;
+    for (const auto& spec : preset_table()) {
+        if (trims.count(spec.id) == 0) {
+            missing += (missing.empty() ? "" : ", ");
+            missing += spec.id;
+        }
+    }
+    // One assertion rather than one per preset: a passing run should say the
+    // rule holds, not recite the whole table back.
+    if (!missing.empty()) {
+        std::printf("  unmeasured presets: %s\n", missing.c_str());
+    }
+    check(missing.empty(), "every preset has a measured output trim");
+    check(trims.size() == preset_table().size(),
+          "the trim table has no leftover entries for deleted presets");
+}
+
 void test_click_detector_single_and_double() {
     using Clock = ClickDetector::Clock;
     using std::chrono::milliseconds;
@@ -1160,6 +1184,7 @@ int main() {
     test_wave_folder_folds_rather_than_clips();
     test_env_filter_opens_with_level();
     test_freeze_holds_after_input_stops();
+    test_every_preset_has_a_measured_trim();
     test_click_detector_single_and_double();
     test_looper_level_scales_playback_not_storage();
     test_led_pattern_base_modes();

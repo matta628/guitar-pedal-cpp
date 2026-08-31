@@ -38,6 +38,10 @@ std::atomic<bool> g_stop{false};
 Telemetry g_telemetry;
 
 void on_sigint(int) { g_stop.store(true, std::memory_order_relaxed); }
+// SIGTERM is what systemctl, pkill and a service manager actually send. Its
+// default action terminates immediately, so without this handler the shutdown
+// path never ran and everything it writes -- the per-preset level report --
+// was silently discarded on every stop.
 
 // Preset names now come from the pedalboard's table (src/Presets.cpp), not
 // from an enum here. The LCD's second line has ten columns to spare after its
@@ -71,6 +75,12 @@ struct PedalChain {
     Looper looper;
 
     std::atomic<ControlMode> mode{ControlMode::Looper};
+
+    // Master output level, after every effect and after the looper. Distinct
+    // from a preset's trim: the trim balances presets against each other and
+    // is reloaded whenever one is selected, while this is a single global you
+    // ride to match the room, and it survives preset changes.
+    std::atomic<float> output_level{1.0f};
 
     // Which presets the second footswitch walks, and where in them we are.
     // Never touched by the audio thread -- see Setlist.h.
@@ -134,6 +144,11 @@ void run_block(PedalChain& chain, const float* in, float* out, unsigned int n_fr
     // After the pedalboard, not inside it: the looper records what you would
     // hear, and keeps running even on the clean preset.
     chain.looper.process(mono, n_frames);
+
+    const float out_level = chain.output_level.load(std::memory_order_relaxed);
+    if (out_level != 1.0f) {
+        for (unsigned int i = 0; i < n_frames; ++i) mono[i] *= out_level;
+    }
 
     // Fan the finished mono signal out to every output channel, interleaved.
     // Writing only channel 0 -- which is what asking RtAudio for a one-channel
@@ -321,6 +336,10 @@ std::string default_settings_path() {
     return std::string(home) + "/.config/guitar-pedal-cpp/presets.conf";
 }
 
+// Dumps what each preset actually did, so "that one was too loud" becomes a
+// number to compare rather than something to remember.
+void write_preset_levels(PedalChain& chain, const std::string& settings, std::ostream* report);
+
 // Sits next to the settings file rather than in the working directory: the
 // pedal is usually started from somewhere arbitrary, or by a service.
 std::string stats_path(const std::string& settings) {
@@ -330,6 +349,19 @@ std::string stats_path(const std::string& settings) {
     return dir + "/preset-levels.csv";
 }
 
+void write_preset_levels(PedalChain& chain, const std::string& settings, std::ostream* report) {
+    std::vector<std::string> names;
+    names.reserve(chain.board.presets().size());
+    for (const auto& preset : chain.board.presets()) names.push_back(preset.name);
+    const std::string csv = stats_path(settings);
+    std::string error;
+    if (chain.stats.write_csv(csv, names, &error)) {
+        if (report) *report << "Per-preset levels written to " << csv << "\n";
+    } else if (report) {
+        *report << "Could not write " << csv << ": " << error << "\n";
+    }
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -337,6 +369,7 @@ int main(int argc, char** argv) {
     if (!parse_args(argc, argv, &opt)) return 1;
 
     std::signal(SIGINT, on_sigint);
+    std::signal(SIGTERM, on_sigint);
 
     RtAudio audio;
     const std::vector<audiodev::Device> devices = audiodev::enumerate(audio);
@@ -682,6 +715,11 @@ int main(int argc, char** argv) {
         for (const auto& p : chain.board.params()) {
             params.push_back({p.id, p.group, p.label, p.min, p.max, p.get, p.set});
         }
+        params.push_back({"output.level", "Output", "Master level", 0.0f, 2.0f,
+                          [&] { return chain.output_level.load(std::memory_order_relaxed); },
+                          [&](float v) {
+                              chain.output_level.store(v, std::memory_order_relaxed);
+                          }});
         params.push_back({"freeze.grain", "Freeze", "Grain ms", 40.0f, 1500.0f,
                           [&] { return chain.freeze.grain_ms(); },
                           [&](float v) { chain.freeze.set_grain_ms(v); }});
@@ -844,28 +882,24 @@ int main(int argc, char** argv) {
         }
     }
 
+    // Flush the level report periodically as well as at exit. The pedal runs
+    // on a board that gets power-cycled at the wall, and measurements taken
+    // over an hour of playing should not depend on a clean shutdown.
+    auto last_flush = std::chrono::steady_clock::now();
     while (!g_stop.load(std::memory_order_relaxed)) {
         std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        const auto now = std::chrono::steady_clock::now();
+        if (now - last_flush >= std::chrono::seconds(60)) {
+            last_flush = now;
+            write_preset_levels(chain, opt.settings, nullptr);
+        }
     }
 
     const Telemetry::Snapshot final_stats = g_telemetry.snapshot();
     std::cout << "\nStopping. Xruns: " << final_stats.xruns << ", worst callback: "
               << final_stats.block_us_max << " us of a " << final_stats.budget_us << " us budget.\n";
 
-    // Dump what each preset actually did, so "that one was too loud" becomes a
-    // number to look at later rather than something to remember.
-    {
-        std::vector<std::string> names;
-        names.reserve(chain.board.presets().size());
-        for (const auto& preset : chain.board.presets()) names.push_back(preset.name);
-        const std::string csv = stats_path(opt.settings);
-        std::string error;
-        if (chain.stats.write_csv(csv, names, &error)) {
-            std::cout << "Per-preset levels written to " << csv << "\n";
-        } else {
-            std::cerr << "Could not write " << csv << ": " << error << "\n";
-        }
-    }
+    write_preset_levels(chain, opt.settings, &std::cout);
 
     if (web) web->stop();
     if (sim_thread.joinable()) sim_thread.join();

@@ -47,10 +47,19 @@ public:
     // per-buffer deadline the UI compares against.
     void configure(float sample_rate, unsigned int buffer_frames);
 
+    // What one buffer contained. Returned by record_block so a caller that
+    // wants to attribute the block to something (which preset was live, say)
+    // does not have to scan the buffer a second time on the audio thread.
+    struct BlockStats {
+        float in_peak = 0.0f;
+        float out_peak = 0.0f;
+        std::uint32_t clips = 0;
+    };
+
     // ---- audio thread only ----
     // `in` may be null (output-only streams); `out` may not.
-    void record_block(const float* in, const float* out, std::size_t n_frames,
-                      std::chrono::nanoseconds elapsed);
+    BlockStats record_block(const float* in, const float* out, std::size_t n_frames,
+                            std::chrono::nanoseconds elapsed);
     void note_xrun() { xruns_.fetch_add(1, std::memory_order_relaxed); }
 
     // ---- any thread ----

@@ -25,8 +25,9 @@ void Telemetry::configure(float sample_rate, unsigned int buffer_frames) {
     budget_us_.store(dt * 1e6f, std::memory_order_relaxed);
 }
 
-void Telemetry::record_block(const float* in, const float* out, std::size_t n_frames,
-                             std::chrono::nanoseconds elapsed) {
+Telemetry::BlockStats Telemetry::record_block(const float* in, const float* out,
+                                              std::size_t n_frames,
+                                              std::chrono::nanoseconds elapsed) {
     float in_peak = 0.0f;
     float in_sq = 0.0f;
     if (in != nullptr) {
@@ -96,6 +97,8 @@ void Telemetry::record_block(const float* in, const float* out, std::size_t n_fr
             stage_fill_ = 0;
         }
     }
+
+    return BlockStats{in_peak, out_peak, clipped};
 }
 
 void Telemetry::reset_peaks() {

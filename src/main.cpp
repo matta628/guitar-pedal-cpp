@@ -18,6 +18,7 @@
 #include "AudioDevice.h"
 #include "Looper.h"
 #include "Pedalboard.h"
+#include "PresetStats.h"
 #include "Setlist.h"
 #include "Telemetry.h"
 #include "WebServer.h"
@@ -57,6 +58,10 @@ struct PedalChain {
     // Which presets the second footswitch walks, and where in them we are.
     // Never touched by the audio thread -- see Setlist.h.
     Setlist setlist;
+
+    // Per-preset running totals, written from the audio callback. Sized before
+    // the stream starts and never resized.
+    PresetStats stats;
 
     // Bumped on every clear so the indicator loop can flash an acknowledgement
     // without the click handler touching a LedPattern from another thread.
@@ -125,7 +130,13 @@ void run_block(PedalChain& chain, const float* in, float* out, unsigned int n_fr
 
     // The mono signal is what the meters and the scope should show: it is the
     // thing the chain actually produced, and the duplicate adds no information.
-    g_telemetry.record_block(in, mono, n_frames, std::chrono::steady_clock::now() - t0);
+    const Telemetry::BlockStats block =
+        g_telemetry.record_block(in, mono, n_frames, std::chrono::steady_clock::now() - t0);
+
+    // Attribute the block to whichever preset produced it. record_block already
+    // scanned the buffer for these figures, so this costs a few atomics rather
+    // than a second pass.
+    chain.stats.record(chain.board.current(), block.in_peak, block.out_peak, block.clips);
 }
 
 int audio_callback(void* output_buffer, void* input_buffer, unsigned int n_frames,
@@ -288,6 +299,15 @@ std::string default_settings_path() {
     return std::string(home) + "/.config/guitar-pedal-cpp/presets.conf";
 }
 
+// Sits next to the settings file rather than in the working directory: the
+// pedal is usually started from somewhere arbitrary, or by a service.
+std::string stats_path(const std::string& settings) {
+    const std::string base = settings.empty() ? default_settings_path() : settings;
+    const std::size_t slash = base.find_last_of('/');
+    const std::string dir = (slash == std::string::npos) ? std::string(".") : base.substr(0, slash);
+    return dir + "/preset-levels.csv";
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -341,6 +361,9 @@ int main(int argc, char** argv) {
     unsigned int buffer_frames = opt.frames;
 
     PedalChain chain(static_cast<float>(sample_rate));
+    // Sized once, here, because record() runs on the audio thread and must
+    // never allocate.
+    chain.stats.configure(chain.board.preset_count());
     g_telemetry.configure(static_cast<float>(sample_rate), buffer_frames);
 
     // Saved edits are read before the stream opens, so the first buffer already
@@ -750,6 +773,21 @@ int main(int argc, char** argv) {
     const Telemetry::Snapshot final_stats = g_telemetry.snapshot();
     std::cout << "\nStopping. Xruns: " << final_stats.xruns << ", worst callback: "
               << final_stats.block_us_max << " us of a " << final_stats.budget_us << " us budget.\n";
+
+    // Dump what each preset actually did, so "that one was too loud" becomes a
+    // number to look at later rather than something to remember.
+    {
+        std::vector<std::string> names;
+        names.reserve(chain.board.presets().size());
+        for (const auto& preset : chain.board.presets()) names.push_back(preset.name);
+        const std::string csv = stats_path(opt.settings);
+        std::string error;
+        if (chain.stats.write_csv(csv, names, &error)) {
+            std::cout << "Per-preset levels written to " << csv << "\n";
+        } else {
+            std::cerr << "Could not write " << csv << ": " << error << "\n";
+        }
+    }
 
     if (web) web->stop();
     if (sim_thread.joinable()) sim_thread.join();

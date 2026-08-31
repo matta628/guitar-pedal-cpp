@@ -36,6 +36,7 @@ add_library(pedal_dsp STATIC
   src/Pedalboard.cpp
   src/Phaser.cpp
   src/PitchShifter.cpp
+  src/PresetStats.cpp
   src/Presets.cpp
   src/Reverb.cpp
   src/Setlist.cpp

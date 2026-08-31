@@ -294,15 +294,32 @@ halfway through leaves the previous settings intact rather than a truncated file
 |---|---|---|
 | Looper switch — record → play → overdub | 17 | 11 |
 | Looper LED — solid: recording · slow blink: playing · fast blink: overdubbing | 22 | 15 |
-| Preset LED — two quick flashes on a preset change; one long flash on clear | 23 | 16 |
+| Preset LED — two quick flashes on a preset change; one long flash on clear | 23 | 16 (not wired) |
 | LCD1602 RS / E / D4 / D5 / D6 / D7 | 5 / 6 / 13 / 19 / 26 / 20 | 29 / 31 / 33 / 35 / 37 / 38 |
 
 Wire one leg of the momentary pushbutton to its GPIO line and the other to GND — the code requests
 the lines with an internal pull-up, so no external resistor is needed. Each LED needs a series
-resistor (220Ω is fine) between the GPIO pin and its anode, with the cathode to GND. The LCD runs in
-4-bit mode with `RW` tied to GND: the panel is write-only, so no 5V logic line ever drives a
+resistor (220Ω is fine) between the GPIO pin and its anode, with the cathode to GND. Only the looper
+LED is actually wired — see "One LED, not two" below. The LCD runs in 4-bit mode with `RW` tied to
+GND: the panel is write-only, so no 5V logic line ever drives a
 (non-5V-tolerant) Pi input, and the driver waits out fixed datasheet delays rather than polling the
 busy flag.
+
+#### One LED, not two
+
+Only the looper LED on GPIO22 is wired. It carries **state** — off, solid for recording, a 1 s blink
+for playing, a 200 ms blink for overdubbing — and a blink rate is legible peripherally, while you
+are looking at the guitar rather than the pedal. The LCD cannot replace that: text has to be read,
+and a 1602 at standing height is at a steep angle.
+
+The preset LED on GPIO23 carried no state. It used to flash the preset *number*, which stopped being
+countable once the table passed five presets, so it was reduced to an acknowledgement flash — and
+with the preset switch gone (below), the only thing that can change a preset is the web UI, a screen
+you are already looking at.
+
+The code is unchanged and both LEDs are still constructed: requesting a GPIO line succeeds whether
+or not an LED is attached, so `guitar_pedal` drives GPIO23 into open air. `have_leds` reports that
+the *lines* opened, not how many lamps exist. Plugging one in later needs no rebuild.
 
 #### One switch, not two
 

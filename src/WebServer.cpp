@@ -420,6 +420,26 @@ void WebServer::route(Connection& c, const std::string& method, const std::strin
         return;
     }
 
+    if (is_post && path == "/api/setlist") {
+        // A comma-separated list of preset indices, in the order the footswitch
+        // should walk them. Empty clears the setlist. Validation lives in
+        // Setlist::set, since these indices arrive from an HTTP request.
+        const std::string value = query_get(query, "value");
+        std::vector<int> presets;
+        std::size_t start = 0;
+        while (start <= value.size() && !value.empty()) {
+            const std::size_t comma = value.find(',', start);
+            const std::string one = value.substr(start, comma - start);
+            if (!one.empty()) presets.push_back(std::atoi(one.c_str()));
+            if (comma == std::string::npos) break;
+            start = comma + 1;
+        }
+        if (callbacks_.set_setlist) callbacks_.set_setlist(std::move(presets));
+        c.out_buf += http_response("200 OK", "application/json", "{\"ok\":true}");
+        c.close_when_drained = true;
+        return;
+    }
+
     if (is_post && path == "/api/preset") {
         const std::string value = query_get(query, "value");
         if (!value.empty() && callbacks_.set_preset) {
@@ -541,7 +561,14 @@ std::string WebServer::state_json(bool full_log) {
         j += "\"" + json_escape(d.active_groups[i]) + "\"";
     }
     j += "]";
+    j += ",\"setlist\":[";
+    for (std::size_t i = 0; i < d.setlist.size(); ++i) {
+        if (i) j += ",";
+        j += std::to_string(d.setlist[i]);
+    }
+    j += "],\"setlist_cursor\":" + std::to_string(d.setlist_cursor);
     j += ",\"gpio\":{\"looper_switch\":" + std::string(d.have_looper_switch ? "true" : "false") +
+         ",\"utility_switch\":" + std::string(d.have_utility_switch ? "true" : "false") +
          ",\"leds\":" + std::string(d.have_leds ? "true" : "false") +
          ",\"lcd\":" + std::string(d.have_lcd ? "true" : "false") + "}";
 

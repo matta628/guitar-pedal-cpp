@@ -38,6 +38,7 @@ add_library(pedal_dsp STATIC
   src/PitchShifter.cpp
   src/Presets.cpp
   src/Reverb.cpp
+  src/Setlist.cpp
   src/RingMod.cpp
   src/Telemetry.cpp
   src/Tone.cpp

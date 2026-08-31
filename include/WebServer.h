@@ -70,6 +70,11 @@ public:
         std::string lcd0;                  // mirror of the physical LCD1602
         std::string lcd1;
         bool have_looper_switch = false;
+        bool have_utility_switch = false;
+        // Preset indices the second footswitch walks, and the position within
+        // that list -- not a preset index -- or -1 before the first step.
+        std::vector<int> setlist;
+        int setlist_cursor = -1;
         bool have_leds = false;
         bool have_lcd = false;
         // Parameter groups the current preset actually runs. The UI dims the
@@ -82,6 +87,7 @@ public:
     };
 
     struct Callbacks {
+        std::function<void(std::vector<int>)> set_setlist;
         std::function<void(int)> set_preset;
         std::function<void()> looper_trigger;
         std::function<void()> looper_clear;

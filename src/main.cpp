@@ -18,10 +18,12 @@
 #include "AudioDevice.h"
 #include "Looper.h"
 #include "Pedalboard.h"
+#include "Setlist.h"
 #include "Telemetry.h"
 #include "WebServer.h"
 
 #ifdef PEDAL_HAVE_GPIO
+#include "ClickDetector.h"
 #include "GpioButton.h"
 #include "GpioLed.h"
 #include "Lcd1602.h"
@@ -51,6 +53,10 @@ const char* looper_state_name(Looper::State state) {
 struct PedalChain {
     Pedalboard board;
     Looper looper;
+
+    // Which presets the second footswitch walks, and where in them we are.
+    // Never touched by the audio thread -- see Setlist.h.
+    Setlist setlist;
 
     // Bumped on every clear so the indicator loop can flash an acknowledgement
     // without the click handler touching a LedPattern from another thread.
@@ -227,6 +233,10 @@ struct Options {
     bool web = true;
     bool simulate = false;
     bool list = false;
+    // How many footswitches are physically wired. The program cannot detect
+    // this: a GPIO line requests successfully whether or not a switch is on
+    // the end of it, so it has to be told.
+    int switches = 1;
 };
 
 void print_usage() {
@@ -237,6 +247,9 @@ void print_usage() {
         "  --rate <hz>             sample rate (default: whatever the device prefers)\n"
         "  --frames <n>            buffer size in frames (default 256)\n"
         "  --port <n>              web UI port (default 8080)\n"
+        "  --switches <1|2>        footswitches wired (default 1). 1: the switch drives\n"
+        "                          the looper and the web UI does everything else.\n"
+        "                          2: switch 2 taps to clear, double-taps to step the setlist.\n"
         "  --settings <path>       saved preset edits (default ~/.config/guitar-pedal-cpp/presets.conf)\n"
         "  --no-web                don't serve the web UI\n"
         "  --simulate              start with the built-in signal generator on\n"
@@ -252,6 +265,7 @@ bool parse_args(int argc, char** argv, Options* opt) {
         else if (a == "--rate" && has_next) opt->rate = std::stoul(argv[++i]);
         else if (a == "--frames" && has_next) opt->frames = std::stoul(argv[++i]);
         else if (a == "--port" && has_next) opt->port = static_cast<std::uint16_t>(std::stoul(argv[++i]));
+        else if (a == "--switches" && has_next) opt->switches = std::stoi(argv[++i]);
         else if (a == "--settings" && has_next) opt->settings = argv[++i];
         else if (a == "--no-web") opt->web = false;
         else if (a == "--simulate") opt->simulate = true;
@@ -414,6 +428,7 @@ int main(int argc, char** argv) {
 
     // ------------------------------------------------------- control surface
     bool have_looper_switch = false;
+    bool have_utility_switch = false;
     bool have_leds = false;
     bool have_lcd = false;
 
@@ -431,11 +446,10 @@ int main(int argc, char** argv) {
     // enumerates as gpiochip0 (confirmed with `gpiodetect`). Run `gpiodetect`
     // if the board or kernel differs.
     constexpr const char* kGpioChip = "gpiochip0";
-    // One switch only. The utility switch (clear / cycle preset) was removed on
-    // 2026-08-31: its two gestures both exist in the web UI, where preset choice
-    // is direct rather than a cycle, and dropping it frees GPIO27 along with the
-    // dupont lead and pair of lever nuts the LCD needs.
     constexpr unsigned int kLooperSwitchLine = 17;   // physical pin 11
+    // Only requested under --switches 2. Nothing is wired here in a one-switch
+    // build, and the web UI covers both of its gestures.
+    constexpr unsigned int kUtilitySwitchLine = 27;  // physical pin 13
     constexpr unsigned int kLooperLedLine = 22;      // physical pin 15
     constexpr unsigned int kPresetLedLine = 23;      // physical pin 16
     // LCD1602 in 4-bit mode: RS, E, D4-D7. R/W is tied to GND on the module.
@@ -454,7 +468,12 @@ int main(int argc, char** argv) {
         /*d7=*/20,      // physical pin 38
     };
 
+    // Declared before the button so it outlives the polling thread that calls
+    // into it.
+    ClickDetector utility_clicks;
+
     std::unique_ptr<GpioButton> looper_switch;
+    std::unique_ptr<GpioButton> utility_switch;
     std::unique_ptr<GpioLed> looper_led;
     std::unique_ptr<GpioLed> preset_led;
     std::unique_ptr<Lcd1602> lcd;
@@ -470,6 +489,41 @@ int main(int argc, char** argv) {
                   << " (record -> play -> overdub).\n";
     } catch (const std::exception& e) {
         std::cerr << "Looper footswitch unavailable (" << e.what() << ").\n";
+    }
+
+    // The looper switch fires on the press edge and always will: the instant
+    // the foot lands is the loop boundary, so it must never wait to find out
+    // whether a second tap is coming. That is exactly why the gesture pair
+    // lives over here instead. Both of these tolerate the delay -- being
+    // ~350 ms late to clear a loop or step a preset is inaudible.
+    if (opt.switches >= 2) {
+        try {
+            utility_switch = std::make_unique<GpioButton>(kGpioChip, kUtilitySwitchLine);
+            utility_clicks.set_handlers(
+                [&]() {
+                    chain.looper.clear();
+                    chain.clear_count.fetch_add(1, std::memory_order_relaxed);
+                    note("footswitch: loop cleared");
+                },
+                [&]() {
+                    const int next = chain.setlist.advance();
+                    if (next < 0) {
+                        note("footswitch: setlist is empty — pick presets in the web UI");
+                        return;
+                    }
+                    chain.board.select(next);
+                    note("footswitch: preset -> " +
+                         chain.board.presets()[static_cast<std::size_t>(next)].name);
+                });
+            utility_switch->start(
+                [&utility_clicks]() { utility_clicks.on_press(std::chrono::steady_clock::now()); },
+                [&utility_clicks]() { utility_clicks.poll(std::chrono::steady_clock::now()); });
+            have_utility_switch = true;
+            std::cout << "Utility footswitch armed on line " << kUtilitySwitchLine
+                      << " (tap: clear, double tap: next in setlist).\n";
+        } catch (const std::exception& e) {
+            std::cerr << "Utility footswitch unavailable (" << e.what() << ").\n";
+        }
     }
 
     try {
@@ -582,9 +636,18 @@ int main(int argc, char** argv) {
         // Every one of these is an atomic store or a pending flag — the same
         // surfaces the footswitch thread uses. The web thread gets no special
         // access to the engine, and the audio thread never waits on it.
+        cb.set_setlist = [&](std::vector<int> presets) {
+            chain.setlist.set(std::move(presets), chain.board.preset_count());
+            note("web: setlist set to " + std::to_string(chain.setlist.presets().size()) +
+                 " preset(s)");
+        };
         cb.set_preset = [&](int value) {
             if (value < 0 || value >= chain.board.preset_count()) return;
             chain.board.select(value);
+            // Picking in the browser moves the footswitch's place in the
+            // setlist too, so the next stomp steps on from what you are
+            // actually hearing rather than from wherever it last left off.
+            chain.setlist.sync_to(value);
             note("web: preset -> " + chain.board.presets()[static_cast<std::size_t>(value)].name);
         };
         cb.looper_trigger = [&]() {
@@ -657,7 +720,10 @@ int main(int argc, char** argv) {
             // panel shows even on a board with no LCD wired to it.
             d.lcd0 = std::string("LOOP: ") + looper_state_name(state);
             d.lcd1 = "FX:   " + spec.short_name;
+            d.setlist = chain.setlist.presets();
+            d.setlist_cursor = chain.setlist.cursor();
             d.have_looper_switch = have_looper_switch;
+            d.have_utility_switch = have_utility_switch;
             d.have_leds = have_leds;
             d.have_lcd = have_lcd;
             return d;

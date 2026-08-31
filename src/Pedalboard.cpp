@@ -16,6 +16,7 @@ const char* stage_group_name(Pedalboard::StageId id) {
         case Pedalboard::StageId::BitCrusher: return "Bit Crusher";
         case Pedalboard::StageId::WaveFolder: return "Wave Folder";
         case Pedalboard::StageId::EnvFilter: return "Env Filter";
+        case Pedalboard::StageId::Freeze: return "Freeze";
         case Pedalboard::StageId::RingMod:    return "Ring Mod";
         case Pedalboard::StageId::Tone:       return "Tone";
         case Pedalboard::StageId::Pitch:      return "Pitch";
@@ -34,6 +35,7 @@ Pedalboard::Pedalboard(float sample_rate)
     // Order matches the member declarations in the header, which is the order
     // they are actually constructed in regardless of what is written here.
     : env_filter_(sample_rate),
+      freeze_(sample_rate),
       pitch_(sample_rate),
       flanger_(sample_rate),
       chorus_(sample_rate),
@@ -62,6 +64,7 @@ Effect* Pedalboard::stage(StageId id) {
         case StageId::BitCrusher: return &bit_crusher_;
         case StageId::WaveFolder: return &wave_folder_;
         case StageId::EnvFilter: return &env_filter_;
+        case StageId::Freeze: return &freeze_;
         case StageId::RingMod:    return &ring_mod_;
         case StageId::Tone:       return &tone_;
         case StageId::Pitch:      return &pitch_;
@@ -169,6 +172,13 @@ void Pedalboard::build_params() {
         [this](float v) { env_filter_.set_release_ms(v); });
     add("env.mix", S::EnvFilter, "Mix", 0.0f, 1.0f,
         [this] { return env_filter_.mix(); }, [this](float v) { env_filter_.set_mix(v); });
+
+    add("freeze.grain", S::Freeze, "Grain ms", 40.0f, 1500.0f,
+        [this] { return freeze_.grain_ms(); }, [this](float v) { freeze_.set_grain_ms(v); });
+    add("freeze.level", S::Freeze, "Pad level", 0.0f, 2.0f,
+        [this] { return freeze_.level(); }, [this](float v) { freeze_.set_level(v); });
+    add("freeze.decay", S::Freeze, "Hold", 0.9f, 1.0f,
+        [this] { return freeze_.decay(); }, [this](float v) { freeze_.set_decay(v); });
 
     add("ring.freq", S::RingMod, "Carrier Hz", 1.0f, 4000.0f,
         [this] { return ring_mod_.frequency_hz(); },

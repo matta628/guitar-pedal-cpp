@@ -17,6 +17,7 @@
 #include "Chorus.h"
 #include "ClickDetector.h"
 #include "EnvFilter.h"
+#include "Freeze.h"
 #include "WaveFolder.h"
 #include "Compressor.h"
 #include "Delay.h"
@@ -220,6 +221,7 @@ void test_looper_overdub_layers_and_decays() {
           "Looper overdub: Empty is a no-op passthrough after clear()");
 }
 
+
 void test_looper_level_scales_playback_not_storage() {
     Looper looper(48000.0f);
     std::vector<float> buf(4, 0.0f);
@@ -313,6 +315,35 @@ void test_env_filter_opens_with_level() {
     const float quiet = brightness(0.05f);
     const float loud = brightness(0.9f);
     check(loud > quiet * 1.5f, "EnvFilter: a loud input passes more highs than a quiet one");
+}
+
+void test_freeze_holds_after_input_stops() {
+    const float sr = 48000.0f;
+    Freeze f(sr);
+    f.set_grain_ms(50.0f);
+    f.set_level(1.0f);
+    f.set_decay(1.0f);
+
+    // Fill the history with signal, then capture it.
+    std::vector<float> buf(4096);
+    for (std::size_t i = 0; i < buf.size(); ++i) {
+        buf[i] = 0.7f * std::sin(2.0f * 3.14159265f * 220.0f * static_cast<float>(i) / sr);
+    }
+    f.process(buf.data(), buf.size());
+    f.capture();
+
+    // Now feed silence. Anything that comes out is the pad.
+    std::fill(buf.begin(), buf.end(), 0.0f);
+    f.process(buf.data(), buf.size());
+    check(local_peak(buf) > 0.05f, "Freeze: audio continues after the input stops");
+    check(f.frozen(), "Freeze: reports itself as frozen");
+
+    // Releasing ends it.
+    f.release();
+    std::fill(buf.begin(), buf.end(), 0.0f);
+    f.process(buf.data(), buf.size());
+    check(local_peak(buf) < 1e-6f, "Freeze: release silences the pad");
+    check(!f.frozen(), "Freeze: reports itself as released");
 }
 
 void test_click_detector_single_and_double() {
@@ -1128,6 +1159,7 @@ int main() {
     test_looper_overdub_layers_and_decays();
     test_wave_folder_folds_rather_than_clips();
     test_env_filter_opens_with_level();
+    test_freeze_holds_after_input_stops();
     test_click_detector_single_and_double();
     test_looper_level_scales_playback_not_storage();
     test_led_pattern_base_modes();

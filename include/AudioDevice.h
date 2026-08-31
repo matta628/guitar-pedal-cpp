@@ -20,8 +20,9 @@
 // the logic lives here rather than twice.
 namespace audiodev {
 
-// Preferred, not required. The Fender Mustang Micro, for one, advertises 44100
-// and nothing else.
+// Preferred, not required. Plenty of class-compliant interfaces advertise 44100
+// and nothing else, so the rate is negotiated against the device rather than
+// assumed.
 constexpr unsigned int kPreferredRate = 48000;
 
 struct Device {

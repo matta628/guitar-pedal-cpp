@@ -13,7 +13,7 @@
 //   ./build/audio_check fx    [dev] [name]   round trip with one effect applied
 //
 // [dev] is a device id from `list`, or any case-insensitive part of its name,
-// so `audio_check thru mustang` works. `thru` takes a second device only when
+// so `audio_check thru duo` works. `thru` takes a second device only when
 // input and output are different devices; normally one USB interface is both.
 //
 // `thru` and `fx` differ on purpose. `thru` proves the path with a straight
@@ -210,7 +210,8 @@ void print_devices(const std::vector<Device>& devices) {
         std::cout << "\n";
     }
     std::cout << "\nA device needs a non-zero `in` to hear the guitar and a non-zero `out` to\n"
-                 "reach the headphones. The Mustang Micro should show both.\n";
+                 "reach the headphones. One device showing both is what you want -- capture and\n"
+                 "playback then share a clock and cannot drift apart.\n";
 }
 
 // ----------------------------------------------------------------- open stream
@@ -390,7 +391,7 @@ float run_meter(Levels& levels, bool show_output, unsigned int rate) {
               << static_cast<double>(frames) / rate << " s), "
               << levels.xruns.load(std::memory_order_relaxed) << " xruns.\n";
     if (clipped) {
-        std::cout << "Signal hit 0 dBFS — turn the Mustang Micro's output down or it will\n"
+        std::cout << "Signal hit 0 dBFS — turn the interface's input gain down or it will\n"
                      "distort before the DSP ever sees it.\n";
     }
     return loudest;
@@ -627,7 +628,7 @@ int usage() {
                  "       audio_check thru  [out-device] [in-device]\n"
                  "       audio_check fx    [device] [reverb|chorus|fuzz]\n"
                  "\n"
-                 "[device] is an id from `list` or part of its name, e.g. `mustang`.\n";
+                 "[device] is an id from `list` or part of its name, e.g. `duo`.\n";
     return 2;
 }
 

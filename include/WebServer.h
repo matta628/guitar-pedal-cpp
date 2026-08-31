@@ -70,7 +70,6 @@ public:
         std::string lcd0;                  // mirror of the physical LCD1602
         std::string lcd1;
         bool have_looper_switch = false;
-        bool have_utility_switch = false;
         bool have_leds = false;
         bool have_lcd = false;
         // Parameter groups the current preset actually runs. The UI dims the

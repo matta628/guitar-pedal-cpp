@@ -542,7 +542,6 @@ std::string WebServer::state_json(bool full_log) {
     }
     j += "]";
     j += ",\"gpio\":{\"looper_switch\":" + std::string(d.have_looper_switch ? "true" : "false") +
-         ",\"utility_switch\":" + std::string(d.have_utility_switch ? "true" : "false") +
          ",\"leds\":" + std::string(d.have_leds ? "true" : "false") +
          ",\"lcd\":" + std::string(d.have_lcd ? "true" : "false") + "}";
 

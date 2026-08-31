@@ -64,7 +64,7 @@ so making fourteen effects stereo would cost cycles and buy nothing.
    ordered array of pointers into them plus a table of parameter values. Switching a preset
    allocates nothing and frees nothing; it is a fixed number of atomic stores and one published
    integer.
-5. **Control surface** — GPIO footswitches for looper transport and preset switching, with LED and
+5. **Control surface** — a GPIO footswitch for looper transport, with LED and
    LCD1602 status output. All of it runs on one 50 Hz indicator thread; none of it touches the
    audio callback.
 6. **Telemetry + dev UI** — the audio callback publishes levels, timing and a waveform window
@@ -84,12 +84,13 @@ so making fourteen effects stereo would cost cycles and buy nothing.
 - [x] **6. Looper** — single mono track, fixed max buffer length, no overdub for v1: record → loop
       playback → stop/clear on one control. Builds on the ring-buffer foundation from Delay.
 - [ ] **7. "Shoegaze mode"** — chain fuzz + chorus + reverb into one preset, play through it live
-- [ ] **8. Stretch: physical footswitches + status display** — two momentary footswitches on the
-      Pi's GPIO, plus LED and LCD status output. Switch 1 drives the looper
-      (record → play → overdub); switch 2 clears the loop on a single click and cycles the effect
-      preset on a double click. `GpioButton`, `GpioLed` and `Lcd1602` (libgpiod v2, Linux-only) all
-      build and run on the target Pi 5. What's left is the physical half — nothing is wired to the
-      header yet, so a real press has never been observed end to end.
+- [ ] **8. Stretch: physical footswitch + status display** — one momentary footswitch on the
+      Pi's GPIO, plus LED and LCD status output. The switch drives the looper
+      (record → play → overdub); everything else is reached from the dev UI. `GpioButton`,
+      `GpioLed` and `Lcd1602` (libgpiod v2, Linux-only) all build and run on the target Pi 5.
+      What's left is the physical half — nothing is wired to the header yet, so a real press has
+      never been observed end to end. A second switch carrying clear and preset-cycle gestures was
+      built and then removed on 2026-08-31 (see "One switch, not two" below).
 - [x] **9. Stretch: looper overdub** — layer additional passes onto an existing loop
 - [x] **10. Dev UI** — the pedal serves its own bench console over HTTP: live input/output metering,
       a waveform scope, callback time against the buffer deadline, direct preset selection, looper
@@ -166,7 +167,7 @@ fit there.
 | Levels | Is the guitar reaching the Pi at a sane level, and is the output clipping? Peak + RMS in dBFS, with a latched clip count. |
 | Waveform | What the signal looks like before and after the chain, on one ~43 ms window. |
 | Deadline | Callback time (last / average / worst) against the `frames / rate` budget, plus the xrun count. This is the number the whole project is about. |
-| Effect | Direct preset selection, rather than cycling the footswitch to get back to the one you wanted. |
+| Effect | Direct preset selection — with no preset footswitch, this is the only way to change the chain. |
 | Looper | State, loop length, and a live playhead — plus trigger/clear, so looper logic can be tested with no switch wired. |
 | Parameters | Live sliders for every DSP knob, so a tone gets tuned by ear instead of by rebuild. |
 | Control surface | A mirror of the LCD and which GPIO devices actually opened. |
@@ -292,33 +293,41 @@ halfway through leaves the previous settings intact rather than a truncated file
 | Function | GPIO | Header pin |
 |---|---|---|
 | Looper switch — record → play → overdub | 17 | 11 |
-| Utility switch — click: clear · double-click: cycle preset | 27 | 13 |
 | Looper LED — solid: recording · slow blink: playing · fast blink: overdubbing | 22 | 15 |
 | Preset LED — two quick flashes on a preset change; one long flash on clear | 23 | 16 |
 | LCD1602 RS / E / D4 / D5 / D6 / D7 | 5 / 6 / 13 / 19 / 26 / 20 | 29 / 31 / 33 / 35 / 37 / 38 |
 
-Wire one leg of each momentary pushbutton to its GPIO line and the other to GND — the code requests
+Wire one leg of the momentary pushbutton to its GPIO line and the other to GND — the code requests
 the lines with an internal pull-up, so no external resistor is needed. Each LED needs a series
 resistor (220Ω is fine) between the GPIO pin and its anode, with the cathode to GND. The LCD runs in
 4-bit mode with `RW` tied to GND: the panel is write-only, so no 5V logic line ever drives a
 (non-5V-tolerant) Pi input, and the driver waits out fixed datasheet delays rather than polling the
 busy flag.
 
-A double-click cycles through all 34 presets in table order, starting from `clean`. That is a lot
-of presses to cross by foot, which is the honest cost of putting a whole library behind one switch
-— the dev UI's direct selection exists because cycling does not scale, and the LCD's second line
-shows the current preset's short name so you can see where you are. Clean is a real preset rather
-than a bypass flag: the looper sits after the pedalboard and runs in every preset, so a loop
-recorded through fuzz still plays back after switching to clean.
+#### One switch, not two
+
+A second footswitch on GPIO27 used to carry two gestures: a single click cleared the loop, a double
+click cycled the preset. It was removed on 2026-08-31 and the header is down to one switch.
+
+Cycling never scaled. A double-click steps through all 34 presets in table order, so reaching the
+one you want can cost thirty presses — which is why the dev UI's direct selection was built in the
+first place, and why the second switch was carrying only one gesture worth having. That gesture,
+clear, is also in the UI, and the looper's own switch is the only control that has to be a foot on
+a floor, because its press instant *is* the loop boundary. Dropping the switch also returns GPIO27,
+a dupont lead and two lever nuts to a bench that was short of all three.
 
 Single-click detection is inherently late: it can't fire until the 350 ms double-click window
-closes. That's why the gesture pair lives on the utility switch and never on the looper switch,
-where the press instant defines the loop boundary.
+closes. That is why the gesture pair never belonged on the looper switch, and it is the reason
+`ClickDetector` still exists, tested but unwired — the class and its trade-off are worth keeping
+for whenever a second switch comes back.
+
+Clean is a real preset rather than a bypass flag: the looper sits after the pedalboard and runs in
+every preset, so a loop recorded through fuzz still plays back after switching to clean.
 
 The Pi 5 drives its 40-pin header through the RP1 chip. On this kernel `gpiodetect` reports it as
 `gpiochip0` (54 lines), which is what `src/main.cpp` uses; older Pi 5 kernels enumerated it as
 `gpiochip4`, so run `gpiodetect` and adjust `kGpioChip` and the line constants in `main()` if your
-board or kernel differs. `guitar_pedal` prints which of the switches, LEDs and LCD armed
+board or kernel differs. `guitar_pedal` prints which of the switch, LEDs and LCD armed
 successfully on startup, and keeps running without any of them.
 
 Ctrl+C stops the passthrough and prints the xrun count.

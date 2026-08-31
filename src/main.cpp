@@ -22,7 +22,6 @@
 #include "WebServer.h"
 
 #ifdef PEDAL_HAVE_GPIO
-#include "ClickDetector.h"
 #include "GpioButton.h"
 #include "GpioLed.h"
 #include "Lcd1602.h"
@@ -415,7 +414,6 @@ int main(int argc, char** argv) {
 
     // ------------------------------------------------------- control surface
     bool have_looper_switch = false;
-    bool have_utility_switch = false;
     bool have_leds = false;
     bool have_lcd = false;
 
@@ -433,8 +431,11 @@ int main(int argc, char** argv) {
     // enumerates as gpiochip0 (confirmed with `gpiodetect`). Run `gpiodetect`
     // if the board or kernel differs.
     constexpr const char* kGpioChip = "gpiochip0";
+    // One switch only. The utility switch (clear / cycle preset) was removed on
+    // 2026-08-31: its two gestures both exist in the web UI, where preset choice
+    // is direct rather than a cycle, and dropping it frees GPIO27 along with the
+    // dupont lead and pair of lever nuts the LCD needs.
     constexpr unsigned int kLooperSwitchLine = 17;   // physical pin 11
-    constexpr unsigned int kUtilitySwitchLine = 27;  // physical pin 13
     constexpr unsigned int kLooperLedLine = 22;      // physical pin 15
     constexpr unsigned int kPresetLedLine = 23;      // physical pin 16
     // LCD1602 in 4-bit mode: RS, E, D4-D7. R/W is tied to GND on the module.
@@ -453,12 +454,7 @@ int main(int argc, char** argv) {
         /*d7=*/20,      // physical pin 38
     };
 
-    // Declared before the buttons so it outlives their polling threads, which
-    // call into it.
-    ClickDetector utility_clicks;
-
     std::unique_ptr<GpioButton> looper_switch;
-    std::unique_ptr<GpioButton> utility_switch;
     std::unique_ptr<GpioLed> looper_led;
     std::unique_ptr<GpioLed> preset_led;
     std::unique_ptr<Lcd1602> lcd;
@@ -474,27 +470,6 @@ int main(int argc, char** argv) {
                   << " (record -> play -> overdub).\n";
     } catch (const std::exception& e) {
         std::cerr << "Looper footswitch unavailable (" << e.what() << ").\n";
-    }
-
-    try {
-        utility_switch = std::make_unique<GpioButton>(kGpioChip, kUtilitySwitchLine);
-        utility_clicks.set_handlers(
-            [&]() {
-                chain.looper.clear();
-                chain.clear_count.fetch_add(1, std::memory_order_relaxed);
-                note("footswitch: loop cleared");
-            },
-            [&]() {
-                note("footswitch: preset -> " + chain.board.presets()[chain.board.cycle()].name);
-            });
-        utility_switch->start(
-            [&utility_clicks]() { utility_clicks.on_press(std::chrono::steady_clock::now()); },
-            [&utility_clicks]() { utility_clicks.poll(std::chrono::steady_clock::now()); });
-        have_utility_switch = true;
-        std::cout << "Utility footswitch armed on line " << kUtilitySwitchLine
-                  << " (click = clear, double-click = cycle preset).\n";
-    } catch (const std::exception& e) {
-        std::cerr << "Utility footswitch unavailable (" << e.what() << ").\n";
     }
 
     try {
@@ -683,7 +658,6 @@ int main(int argc, char** argv) {
             d.lcd0 = std::string("LOOP: ") + looper_state_name(state);
             d.lcd1 = "FX:   " + spec.short_name;
             d.have_looper_switch = have_looper_switch;
-            d.have_utility_switch = have_utility_switch;
             d.have_leds = have_leds;
             d.have_lcd = have_lcd;
             return d;

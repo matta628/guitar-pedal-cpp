@@ -10,8 +10,13 @@
 // double-click window expires there is no way to know whether a second press
 // is coming. So on_single fires `window` milliseconds late by construction,
 // while on_double fires immediately on the second press. That trade is the
-// reason this sits on the utility switch (clear / cycle effect) and not on the
+// reason it belongs on a utility switch (clear / cycle effect) and never on the
 // looper's record switch, where the press instant defines the loop boundary.
+//
+// Currently unwired: the second footswitch was dropped on 2026-08-31 so bench
+// testing could concentrate on the looper, and both of its gestures are in the
+// web UI. Kept because it is self-contained and tested — rewiring a second
+// switch is a `make_unique<GpioButton>` plus a `set_handlers` call in main.
 //
 // Not thread-safe: on_press() and poll() are meant to be called from the same
 // polling thread (GpioButton's), and the handlers run on that thread too.

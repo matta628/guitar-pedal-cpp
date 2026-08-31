@@ -139,7 +139,7 @@
     <h2>Effect</h2>
     <div class="row" id="presets"></div>
     <p class="muted" id="preset-hint" style="margin:10px 0 0;font-size:11px">
-      Same index the utility footswitch cycles through.
+      Selected directly here — there is no footswitch for the effect chain.
     </p>
   </section>
 
@@ -209,7 +209,6 @@
     <div class="lcd"><span id="lcd0">                </span><br><span id="lcd1">                </span></div>
     <div class="row" style="margin-top:10px">
       <span class="pill" id="gp-looper">looper switch</span>
-      <span class="pill" id="gp-util">utility switch</span>
       <span class="pill" id="gp-leds">LEDs</span>
       <span class="pill" id="gp-lcd">LCD1602</span>
     </div>
@@ -384,7 +383,6 @@ function render(s) {
   $("lcd0").textContent = (s.lcd[0] + "                ").slice(0, 16);
   $("lcd1").textContent = (s.lcd[1] + "                ").slice(0, 16);
   setPill($("gp-looper"), s.gpio.looper_switch, "looper switch");
-  setPill($("gp-util"), s.gpio.utility_switch, "utility switch");
   setPill($("gp-leds"), s.gpio.leds, "LEDs");
   setPill($("gp-lcd"), s.gpio.lcd, "LCD1602");
 

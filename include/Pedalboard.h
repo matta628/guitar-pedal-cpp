@@ -16,7 +16,6 @@
 #include "EnvFilter.h"
 #include "Effect.h"
 #include "Flanger.h"
-#include "Freeze.h"
 #include "Fuzz.h"
 #include "Phaser.h"
 #include "PitchShifter.h"
@@ -58,7 +57,6 @@ public:
         WaveFolder,
         RingMod,
         EnvFilter,
-        Freeze,
         Tone,
         Pitch,
         Phaser,
@@ -177,7 +175,6 @@ private:
     BitCrusher bit_crusher_;
     WaveFolder wave_folder_;
     EnvFilter env_filter_;
-    Freeze freeze_;
     RingMod ring_mod_;
     Tone tone_;
     PitchShifter pitch_;

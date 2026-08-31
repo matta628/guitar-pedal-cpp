@@ -77,10 +77,6 @@ Settings env(float base, float range, float sens, float q, float attack, float r
             {"env.mix", mix}};
 }
 
-Settings freeze(float grain_ms, float level, float hold) {
-    return {{"freeze.grain", grain_ms}, {"freeze.level", level}, {"freeze.decay", hold}};
-}
-
 Settings pitch(float semitones, float cents, float mix) {
     return {{"pitch.semitones", semitones}, {"pitch.cents", cents}, {"pitch.mix", mix}};
 }
@@ -427,20 +423,6 @@ const std::vector<Pedalboard::PresetSpec>& table() {
      "The same follower with negative sensitivity, so the filter shuts as you "
      "dig in. Strange and synthetic — nothing acoustic behaves this way.",
      "—", {S::EnvFilter}, env(1400.0f, 2400.0f, -1.6f, 6.0f, 5.0f, 260.0f, 1.0f)},
-
-    {"freeze", "Freeze", "FREEZE",
-     "Grabs the last fraction of a second and loops it as a drone while you "
-     "play over it. Two grains half a period apart, crossfaded, so the repeat "
-     "smears into a pad instead of ticking.",
-     "—", {S::Freeze}, freeze(320.0f, 0.8f, 1.0f)},
-
-    {"glassdrone", "Glass Drone", "DRONE",
-     "Freeze into a folder into a long hall: catch a chord, hold it, and let "
-     "the fold turn it metallic while the reverb smears what is left.",
-     "—", {S::Freeze, S::WaveFolder, S::Reverb},
-     merge(freeze(420.0f, 0.9f, 0.999f),
-           fold(3.5f, 0.12f, 0.5f, 0.55f),
-           reverb(kHall, 0.9f, 0.25f, 0.6f))},
 
     {"funkfilter", "Funk Filter", "FUNK",
      "Compressor into the envelope filter, which is the order that makes an "

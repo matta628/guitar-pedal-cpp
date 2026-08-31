@@ -31,7 +31,6 @@ add_library(pedal_dsp STATIC
   src/Distortion.cpp
   src/EnvFilter.cpp
   src/Flanger.cpp
-  src/Freeze.cpp
   src/Fuzz.cpp
   src/LedPattern.cpp
   src/Looper.cpp

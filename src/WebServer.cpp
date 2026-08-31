@@ -448,6 +448,18 @@ void WebServer::route(Connection& c, const std::string& method, const std::strin
         return;
     }
 
+    if (is_post && path == "/api/freeze") {
+        const std::string action = query_get(query, "action");
+        if (action == "mode" && callbacks_.set_mode) {
+            callbacks_.set_mode(query_get(query, "value") == "1");
+        } else if (callbacks_.freeze_toggle) {
+            callbacks_.freeze_toggle();
+        }
+        c.out_buf += http_response("200 OK", "application/json", "{\"ok\":true}");
+        c.close_when_drained = true;
+        return;
+    }
+
     if (is_post && path == "/api/setlist/advance") {
         // The browser must not compute the next slot itself. Setlist::advance
         // moves the cursor by one from wherever it is; picking a preset and
@@ -601,6 +613,8 @@ std::string WebServer::state_json(bool full_log) {
         j += "\"" + json_escape(d.active_groups[i]) + "\"";
     }
     j += "]";
+    j += ",\"frozen\":" + std::string(d.frozen ? "true" : "false");
+    j += ",\"freeze_mode\":" + std::string(d.freeze_mode ? "true" : "false");
     j += ",\"setlist\":[";
     for (std::size_t i = 0; i < d.setlist.size(); ++i) {
         if (i) j += ",";

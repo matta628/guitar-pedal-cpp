@@ -18,6 +18,7 @@
 #include "AudioDevice.h"
 #include "Looper.h"
 #include "Pedalboard.h"
+#include "Freeze.h"
 #include "PresetStats.h"
 #include "Setlist.h"
 #include "Telemetry.h"
@@ -51,9 +52,25 @@ const char* looper_state_name(Looper::State state) {
     return "?";
 }
 
+// What the single footswitch drives. Only meaningful with --switches 1: with
+// two switches, switch 1 is always the looper and this stays on Looper.
+//
+// Set from the web UI rather than by a gesture on the switch itself. That is
+// the point of doing it this way -- the switch keeps firing on the press edge,
+// so the looper's boundary still lands exactly where the foot does, which a
+// double-tap or long-press gesture would have cost.
+enum class ControlMode { Looper, Freeze };
+
 struct PedalChain {
     Pedalboard board;
+    // Outside the board on purpose, like the looper below it. Freeze is a
+    // performance control, not a tone stage: it has to work on whichever
+    // preset is selected, and as a stage it would silently do nothing on the
+    // 36 presets whose chain does not list it.
+    Freeze freeze;
     Looper looper;
+
+    std::atomic<ControlMode> mode{ControlMode::Looper};
 
     // Which presets the second footswitch walks, and where in them we are.
     // Never touched by the audio thread -- see Setlist.h.
@@ -75,7 +92,8 @@ struct PedalChain {
     std::vector<float> mono;
     unsigned int out_channels = 1;
 
-    explicit PedalChain(float sample_rate) : board(sample_rate), looper(sample_rate) {}
+    explicit PedalChain(float sample_rate)
+        : board(sample_rate), freeze(sample_rate), looper(sample_rate) {}
 
     // Call before the stream is started, never while it is running.
     void prepare(unsigned int max_frames, unsigned int channels) {
@@ -108,6 +126,10 @@ void run_block(PedalChain& chain, const float* in, float* out, unsigned int n_fr
     }
 
     chain.board.process(mono, n_frames);
+
+    // Freeze before the looper so a captured drone is part of what the looper
+    // records -- hold a chord, loop over it, and the loop contains the pad.
+    chain.freeze.process(mono, n_frames);
 
     // After the pedalboard, not inside it: the looper records what you would
     // hear, and keeps running even on the clean preset.
@@ -503,7 +525,17 @@ int main(int argc, char** argv) {
 
     try {
         looper_switch = std::make_unique<GpioButton>(kGpioChip, kLooperSwitchLine);
+        // Still a bare press handler, deliberately: the mode is chosen in the
+        // browser, so the stomp itself needs no gesture and fires the instant
+        // the foot lands.
         looper_switch->start([&]() {
+            if (opt.switches < 2 &&
+                chain.mode.load(std::memory_order_relaxed) == ControlMode::Freeze) {
+                chain.freeze.toggle();
+                if (web) web->log(chain.freeze.frozen() ? "footswitch: freeze captured"
+                                                        : "footswitch: freeze released");
+                return;
+            }
             chain.looper.on_trigger();
             if (web) web->log("footswitch: looper trigger");
         });
@@ -650,6 +682,15 @@ int main(int argc, char** argv) {
         for (const auto& p : chain.board.params()) {
             params.push_back({p.id, p.group, p.label, p.min, p.max, p.get, p.set});
         }
+        params.push_back({"freeze.grain", "Freeze", "Grain ms", 40.0f, 1500.0f,
+                          [&] { return chain.freeze.grain_ms(); },
+                          [&](float v) { chain.freeze.set_grain_ms(v); }});
+        params.push_back({"freeze.level", "Freeze", "Pad level", 0.0f, 2.0f,
+                          [&] { return chain.freeze.level(); },
+                          [&](float v) { chain.freeze.set_level(v); }});
+        params.push_back({"freeze.decay", "Freeze", "Hold", 0.9f, 1.0f,
+                          [&] { return chain.freeze.decay(); },
+                          [&](float v) { chain.freeze.set_decay(v); }});
         params.push_back({"looper.level", "Looper", "Loop volume", 0.0f, 1.5f,
                           [&] { return chain.looper.level(); },
                           [&](float v) { chain.looper.set_level(v); }});
@@ -678,6 +719,15 @@ int main(int argc, char** argv) {
                 notes.push_back(chain.board.note(i));
             }
             return notes;
+        };
+        cb.freeze_toggle = [&]() {
+            chain.freeze.toggle();
+            if (web) web->log(chain.freeze.frozen() ? "web: freeze captured" : "web: freeze released");
+        };
+        cb.set_mode = [&](bool freeze_mode) {
+            chain.mode.store(freeze_mode ? ControlMode::Freeze : ControlMode::Looper,
+                             std::memory_order_relaxed);
+            note(freeze_mode ? "web: footswitch -> FREEZE" : "web: footswitch -> LOOPER");
         };
         cb.setlist_advance = [&]() {
             const int next = chain.setlist.advance();
@@ -772,6 +822,8 @@ int main(int argc, char** argv) {
             // panel shows even on a board with no LCD wired to it.
             d.lcd0 = std::string("LOOP: ") + looper_state_name(state);
             d.lcd1 = "FX:   " + spec.short_name;
+            d.frozen = chain.freeze.frozen();
+            d.freeze_mode = chain.mode.load(std::memory_order_relaxed) == ControlMode::Freeze;
             d.setlist = chain.setlist.presets();
             d.setlist_cursor = chain.setlist.cursor();
             d.have_looper_switch = have_looper_switch;

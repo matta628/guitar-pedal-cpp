@@ -71,6 +71,8 @@ public:
         std::string lcd1;
         bool have_looper_switch = false;
         bool have_utility_switch = false;
+        bool frozen = false;
+        bool freeze_mode = false;
         // Preset indices the second footswitch walks, and the position within
         // that list -- not a preset index -- or -1 before the first step.
         std::vector<int> setlist;
@@ -89,6 +91,8 @@ public:
     struct Callbacks {
         std::function<void(int, std::string)> set_note;
         std::function<std::vector<std::string>()> get_notes;
+        std::function<void()> freeze_toggle;
+        std::function<void(bool)> set_mode;
         std::function<void()> setlist_advance;
         std::function<void(std::vector<int>)> set_setlist;
         std::function<void(int)> set_preset;

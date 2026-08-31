@@ -162,6 +162,14 @@
   .grip:hover { color: var(--text); }
   .col-mid > .dragging { opacity: .45; }
   .col-mid > .drop-target { box-shadow: 0 -2px 0 0 var(--accent); }
+  .freeze-row {
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 12px;
+    padding-top: 12px; border-top: 1px solid var(--line);
+  }
+  #btn-freeze.on { background: #123024; border-color: #1f6d4d; color: var(--accent); }
+  .mode-toggle { display: flex; align-items: center; gap: 7px; cursor: pointer; font-size: 12px; }
+  .mode-toggle input { accent-color: var(--accent-2); }
+  .mode-toggle.hidden { display: none; }
   .note-box { margin-top: 12px; }
   .note-box textarea {
     width: 100%; resize: vertical; margin-top: 6px;
@@ -553,6 +561,16 @@ The trigger only sets a flag; the state change itself happens on the audio threa
         Trigger drives the same state machine as the looper footswitch:
         empty &rarr; record &rarr; play &rarr; overdub &rarr; play. <span class="muted">(Space / c)</span>
       </p>
+
+      <div class="freeze-row">
+        <button class="big" id="btn-freeze" data-tip-title="Freeze"
+                data-tip="Grabs the last fraction of a second and loops it as a drone while you keep playing over it. Press again to let it go.&#10;&#10;Unlike the looper, freeze takes whatever happened to be in the buffer the instant you hit it — you use it to turn a chord you just played into a pad, not to build an arrangement.&#10;&#10;Runs on every preset: it sits after the pedalboard, like the looper, rather than being a stage that only some chains include. (f)">Freeze</button>
+        <label class="mode-toggle" id="mode-toggle" data-tip-title="What the footswitch does"
+               data-tip="With one switch wired, the stomp can only do one job at a time, so you choose it here rather than with a gesture on the switch. That keeps the press edge instant — a double-tap or long-press would delay the looper's boundary by the length of the gesture.&#10;&#10;Wire the second switch and this goes away: switch 1 stays on the looper permanently.">
+          <input type="checkbox" id="mode-freeze">
+          <span>Footswitch drives freeze</span>
+        </label>
+      </div>
     </section>
 
     <section>
@@ -1219,6 +1237,13 @@ function render(s) {
     b.classList.toggle("on", Number(b.dataset.preset) === s.preset);
   });
 
+  $("btn-freeze").classList.toggle("on", !!s.frozen);
+  $("btn-freeze").textContent = s.frozen ? "Frozen \u2014 release" : "Freeze";
+  $("mode-freeze").checked = !!s.freeze_mode;
+  // With two switches wired the stomp is always the looper, so the choice is
+  // meaningless and the control should not be there to confuse.
+  $("mode-toggle").classList.toggle("hidden", !!(s.gpio && s.gpio.utility_switch));
+
   const sel = cfg && cfg.presets && cfg.presets[s.preset];
   if (sel) {
     const gear = sel.gear && sel.gear !== "\u2014" ? " \u2014 " + sel.gear : "";
@@ -1454,6 +1479,7 @@ document.addEventListener("keydown", (e) => {
   if (e.metaKey || e.ctrlKey || e.altKey) return;
   if (e.code === "Space") { e.preventDefault(); post("/api/looper", { action: "trigger" }); }
   if (e.key === "c") post("/api/looper", { action: "clear" });
+  if (e.key === "f") post("/api/freeze", {});
   if (e.key === "n") stepSetlist(1);
   if (e.key === "p") stepSetlist(-1);
   if (e.key >= "1" && e.key <= "9") post("/api/preset", { value: Number(e.key) - 1 });
@@ -1473,6 +1499,10 @@ restorePanelOrder();
 initPanelDragging();
 makeTipsReachable();
 fitCanvas();
+$("btn-freeze").onclick = () => post("/api/freeze", {});
+$("mode-freeze").onchange = (e) =>
+  post("/api/freeze", { action: "mode", value: e.target.checked ? 1 : 0 });
+
 $("preset-note").addEventListener("blur", saveNote);
 // Ctrl/Cmd+Enter commits without leaving the box.
 $("preset-note").addEventListener("keydown", (e) => {

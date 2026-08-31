@@ -335,12 +335,33 @@ void Pedalboard::load_user_presets() {
             target = (it == presets_.end()) ? nullptr : &*it;
             if (target != nullptr) {
                 target->overrides.clear();
+                // Provisional: a block containing only a note carries no edits,
+                // so this is corrected once the block has been read.
                 target->has_override = true;
             }
             continue;
         }
 
         if (target == nullptr) continue;
+
+        // Before the numeric parse: a note's text is not a float, so the
+        // `fields >> key >> value` below would silently discard it.
+        if (line.rfind("note ", 0) == 0) {
+            const std::string raw = line.substr(5);
+            std::string text;
+            text.reserve(raw.size());
+            for (std::size_t i = 0; i < raw.size(); ++i) {
+                if (raw[i] == '\\' && i + 1 < raw.size() && raw[i + 1] == 'n') {
+                    text += '\n';
+                    ++i;
+                } else {
+                    text += raw[i];
+                }
+            }
+            target->note = text;
+            continue;
+        }
+
         std::istringstream fields(line);
         std::string key;
         float value = 0.0f;
@@ -381,8 +402,22 @@ bool Pedalboard::write_user_presets(std::string* error) {
         out << "# guitar-pedal-cpp saved settings. Delete a block to restore that\n"
                "# preset's built-in values, or delete the file to reset everything.\n";
         for (const Preset& preset : presets_) {
-            if (!preset.has_override || preset.overrides.empty()) continue;
+            const bool has_values = preset.has_override && !preset.overrides.empty();
+            if (!has_values && preset.note.empty()) continue;
             out << "\n[" << preset.id << "]\n";
+            if (!preset.note.empty()) {
+                // One line, so the reader stays line-oriented. Real newlines
+                // are escaped rather than wrapped.
+                std::string flat = preset.note;
+                std::string escaped;
+                escaped.reserve(flat.size());
+                for (char ch : flat) {
+                    if (ch == '\n') escaped += "\\n";
+                    else if (ch == '\r') continue;
+                    else escaped += ch;
+                }
+                out << "note " << escaped << '\n';
+            }
             for (const auto& [param_index, value] : preset.overrides) {
                 out << params_[param_index].id << ' ' << value << '\n';
             }
@@ -444,4 +479,18 @@ bool Pedalboard::reset_all(std::string* error) {
     }
     select(current_.load(std::memory_order_relaxed));
     return write_user_presets(error);
+}
+
+bool Pedalboard::set_note(int index, std::string note, std::string* error) {
+    if (index < 0 || index >= static_cast<int>(presets_.size())) {
+        if (error) *error = "no such preset";
+        return false;
+    }
+    presets_[static_cast<std::size_t>(index)].note = std::move(note);
+    return write_user_presets(error);
+}
+
+std::string Pedalboard::note(int index) const {
+    if (index < 0 || index >= static_cast<int>(presets_.size())) return {};
+    return presets_[static_cast<std::size_t>(index)].note;
 }

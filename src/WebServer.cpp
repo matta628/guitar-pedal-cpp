@@ -420,6 +420,46 @@ void WebServer::route(Connection& c, const std::string& method, const std::strin
         return;
     }
 
+    if (path == "/api/notes" && !is_post) {
+        // Fetched on load and after each save rather than ridden along with
+        // /api/state: notes change a few times an hour, and state goes out at
+        // 25 Hz to every connected browser.
+        std::string j = "{\"notes\":[";
+        if (callbacks_.get_notes) {
+            const std::vector<std::string> notes = callbacks_.get_notes();
+            for (std::size_t i = 0; i < notes.size(); ++i) {
+                if (i) j += ",";
+                j += "\"" + json_escape(notes[i]) + "\"";
+            }
+        }
+        j += "]}";
+        c.out_buf += http_response("200 OK", "application/json", j);
+        c.close_when_drained = true;
+        return;
+    }
+
+    if (is_post && path == "/api/preset/note") {
+        const std::string index = query_get(query, "index");
+        if (!index.empty() && callbacks_.set_note) {
+            callbacks_.set_note(std::atoi(index.c_str()), query_get(query, "value"));
+        }
+        c.out_buf += http_response("200 OK", "application/json", "{\"ok\":true}");
+        c.close_when_drained = true;
+        return;
+    }
+
+    if (is_post && path == "/api/setlist/advance") {
+        // The browser must not compute the next slot itself. Setlist::advance
+        // moves the cursor by one from wherever it is; picking a preset and
+        // relying on sync_to() jumps to its FIRST occurrence instead, so a set
+        // containing the same preset twice steps differently by foot and by
+        // mouse. One entry point keeps them identical.
+        if (callbacks_.setlist_advance) callbacks_.setlist_advance();
+        c.out_buf += http_response("200 OK", "application/json", "{\"ok\":true}");
+        c.close_when_drained = true;
+        return;
+    }
+
     if (is_post && path == "/api/setlist") {
         // A comma-separated list of preset indices, in the order the footswitch
         // should walk them. Empty clears the setlist. Validation lives in

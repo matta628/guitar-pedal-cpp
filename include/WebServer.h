@@ -87,6 +87,9 @@ public:
     };
 
     struct Callbacks {
+        std::function<void(int, std::string)> set_note;
+        std::function<std::vector<std::string>()> get_notes;
+        std::function<void()> setlist_advance;
         std::function<void(std::vector<int>)> set_setlist;
         std::function<void(int)> set_preset;
         std::function<void()> looper_trigger;

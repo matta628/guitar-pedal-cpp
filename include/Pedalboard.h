@@ -108,6 +108,11 @@ public:
         // default" is a deletion, not a second table of remembered values.
         std::vector<std::pair<std::size_t, float>> overrides;
         bool has_override = false;
+        // Free text the player writes while auditioning: "way too loud",
+        // "great for verses". Deliberately NOT part of has_override -- a note
+        // is an observation about a preset, not an edit to it, so writing one
+        // must not make the UI claim the preset has been modified.
+        std::string note;
     };
 
     explicit Pedalboard(float sample_rate);
@@ -137,6 +142,10 @@ public:
     bool reset_preset(int index, std::string* error = nullptr);
     bool reset_all(std::string* error = nullptr);
     bool has_override(int index) const;
+
+    // Notes persist in the same file as saved edits. Setting one rewrites it.
+    bool set_note(int index, std::string note, std::string* error = nullptr);
+    std::string note(int index) const;
 
     const std::vector<Preset>& presets() const { return presets_; }
     const std::vector<Param>& params() const { return params_; }

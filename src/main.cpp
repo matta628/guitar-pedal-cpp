@@ -662,6 +662,32 @@ int main(int argc, char** argv) {
         // Every one of these is an atomic store or a pending flag — the same
         // surfaces the footswitch thread uses. The web thread gets no special
         // access to the engine, and the audio thread never waits on it.
+        cb.set_note = [&](int index, std::string text) {
+            std::string error;
+            if (chain.board.set_note(index, std::move(text), &error)) {
+                note("web: note saved for " +
+                     chain.board.presets()[static_cast<std::size_t>(index)].name);
+            } else {
+                note("could not save note: " + error);
+            }
+        };
+        cb.get_notes = [&]() {
+            std::vector<std::string> notes;
+            notes.reserve(chain.board.presets().size());
+            for (int i = 0; i < chain.board.preset_count(); ++i) {
+                notes.push_back(chain.board.note(i));
+            }
+            return notes;
+        };
+        cb.setlist_advance = [&]() {
+            const int next = chain.setlist.advance();
+            if (next < 0) {
+                note("web: setlist is empty");
+                return;
+            }
+            chain.board.select(next);
+            note("web: preset -> " + chain.board.presets()[static_cast<std::size_t>(next)].name);
+        };
         cb.set_setlist = [&](std::vector<int> presets) {
             chain.setlist.set(std::move(presets), chain.board.preset_count());
             note("web: setlist set to " + std::to_string(chain.setlist.presets().size()) +

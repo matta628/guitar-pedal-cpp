@@ -31,6 +31,7 @@
 #include <chrono>
 #include <cmath>
 #include <csignal>
+#include <cstdlib>
 #include <cstring>
 #include <iomanip>
 #include <iostream>
@@ -47,7 +48,7 @@
 
 namespace {
 
-constexpr unsigned int kBufferFrames = 256;
+constexpr unsigned int kBufferFrames = 256;  // period size; PEDAL_FRAMES overrides
 
 std::atomic<bool> g_stop{false};
 void on_sigint(int) { g_stop.store(true, std::memory_order_relaxed); }
@@ -218,12 +219,50 @@ void print_devices(const std::vector<Device>& devices) {
 
 // RtAudio 6 returns an error code; RtAudio 5 throws. Both are funnelled here so
 // the callers read the same either way.
+// Round-trip latency is the period size times the period count, on each side.
+// RtAudio's ALSA backend defaults to four periods, so a 256-frame period --
+// 5.3 ms at 48 kHz -- is really 21.3 ms of capture buffer plus 21.3 ms of
+// playback buffer, about 43 ms round trip, which is audible while playing.
+//
+// Measured on the M-Track Duo (TI PCM2900C, full-speed USB) 2026-08-31, by ear
+// against a 30 s reverb round trip each time:
+//
+//   period x count   total/side   result
+//   256 x 4  (default)   1024     clean
+//   256 x 2               512     audibly distorted
+//   128 x 4               512     audibly distorted
+//   128 x 2               256     audibly distorted
+//
+// It tracks TOTAL buffer, not period count: this device needs ~1024 frames a
+// side and degrades below that however the slicing is done. ALSA reported
+// **zero xruns** in every one of those runs, so the counter cannot be trusted
+// to detect it -- only listening did. ~43 ms is this interface's floor, and
+// lower latency needs different hardware (a high-speed USB 2.0 interface),
+// not different code.
+//
+// So nothing is overridden by default -- passing no StreamOptions is what
+// produces the clean 4-period stream. The env vars exist to re-run that sweep
+// on other hardware without a rebuild:
+//   PEDAL_FRAMES=128 PEDAL_PERIODS=2 ./audio_check fx 129 reverb
+unsigned int env_uint(const char* name, unsigned int fallback) {
+    const char* raw = std::getenv(name);
+    if (raw == nullptr) return fallback;
+    const long v = std::strtol(raw, nullptr, 10);
+    return v > 0 ? static_cast<unsigned int>(v) : fallback;
+}
+
 bool open_stream(RtAudio& audio, RtAudio::StreamParameters* out_params,
                  RtAudio::StreamParameters* in_params, unsigned int* buffer_frames,
                  RtAudioCallback cb, void* user_data, unsigned int rate) {
+    // Only built when asked. Unset PEDAL_PERIODS means a null StreamOptions,
+    // which is exactly what shipped before this knob existed.
+    RtAudio::StreamOptions options;
+    const unsigned int periods = env_uint("PEDAL_PERIODS", 0);
+    options.numberOfBuffers = periods;
+    RtAudio::StreamOptions* opts = periods > 0 ? &options : nullptr;
 #if PEDAL_RTAUDIO6
     if (audio.openStream(out_params, in_params, RTAUDIO_FLOAT32, rate, buffer_frames, cb,
-                         user_data) != RTAUDIO_NO_ERROR) {
+                         user_data, opts) != RTAUDIO_NO_ERROR) {
         std::cerr << "openStream failed: " << audio.getErrorText() << "\n";
         print_warnings();
         return false;
@@ -236,7 +275,7 @@ bool open_stream(RtAudio& audio, RtAudio::StreamParameters* out_params,
 #else
     try {
         audio.openStream(out_params, in_params, RTAUDIO_FLOAT32, rate, buffer_frames, cb,
-                         user_data);
+                         user_data, opts);
         audio.startStream();
         return true;
     } catch (const std::exception& e) {
@@ -435,7 +474,7 @@ int mode_meter(RtAudio& audio, const std::string& spec) {
     RtAudio::StreamParameters in_params;
     in_params.deviceId = dev.id;
     in_params.nChannels = channels;
-    unsigned int buffer_frames = kBufferFrames;
+    unsigned int buffer_frames = env_uint("PEDAL_FRAMES", kBufferFrames);
 
     Levels levels;
     levels.channels = channels;
@@ -470,7 +509,7 @@ int mode_tone(RtAudio& audio, const std::string& spec, double hz) {
     RtAudio::StreamParameters out_params;
     out_params.deviceId = dev.id;
     out_params.nChannels = std::min(dev.out_channels, 2u);
-    unsigned int buffer_frames = kBufferFrames;
+    unsigned int buffer_frames = env_uint("PEDAL_FRAMES", kBufferFrames);
 
     unsigned int rate = pick_rate(dev);
     ToneState state;
@@ -523,7 +562,7 @@ int mode_thru(RtAudio& audio, const std::string& out_spec, const std::string& in
     RtAudio::StreamParameters in_params;
     in_params.deviceId = in_dev.id;
     in_params.nChannels = 1;
-    unsigned int buffer_frames = kBufferFrames;
+    unsigned int buffer_frames = env_uint("PEDAL_FRAMES", kBufferFrames);
 
     unsigned int rate = 0;
     if (!pick_shared_rate(in_dev, out_dev, &rate)) return 1;
@@ -546,9 +585,18 @@ int mode_thru(RtAudio& audio, const std::string& out_spec, const std::string& in
     float loudest = run_meter(levels, true, rate);
     close_stream(audio);
 
-    if (loudest < 1e-4f) {
-        std::cout << "\nThe stream ran but no signal arrived, so there is nothing to pass through.\n"
-                     "Run `audio_check meter` first to isolate the input side.\n";
+    // -50 dBFS. The old bound was 1e-4 (-80 dBFS), which sits *inside* the
+    // interface's own noise floor -- a run with the guitar untouched measured
+    // -78 dBFS and was reported as a working round trip. A played guitar peaks
+    // around -14 dBFS, so this separates the two by 35 dB and still passes a
+    // quiet one.
+    constexpr float kSignalFloor = 3.2e-3f;
+    if (loudest < kSignalFloor) {
+        std::cout << "\nThe stream ran cleanly, but nothing louder than "
+                  << db_text(loudest) << " dBFS arrived — that is a noise floor, not a guitar.\n"
+                     "Nothing was passed through, so this proves the stream opened and no more.\n"
+                     "Play while it runs; if it stays this quiet, run `audio_check meter` to\n"
+                     "isolate the input side.\n";
         return 1;
     }
     std::cout << "\nRound trip works: guitar → interface → Pi → interface → headphones.\n"
@@ -597,7 +645,7 @@ int mode_fx(RtAudio& audio, const std::string& spec, const std::string& effect_n
     RtAudio::StreamParameters in_params;
     in_params.deviceId = dev.id;
     in_params.nChannels = 1;
-    unsigned int buffer_frames = kBufferFrames;
+    unsigned int buffer_frames = env_uint("PEDAL_FRAMES", kBufferFrames);
 
     FxState state;
     state.levels.out_channels = out_params.nChannels;

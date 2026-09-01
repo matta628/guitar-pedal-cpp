@@ -281,6 +281,7 @@ struct Options {
     std::uint16_t port = 8080;
     std::string settings;     // empty = the default path under $HOME
     bool web = true;
+    bool lcd = true;
     bool simulate = false;
     bool list = false;
     // How many footswitches are physically wired. The program cannot detect
@@ -304,6 +305,7 @@ void print_usage() {
         "                          2: switch 2 taps to clear, double-taps to step the setlist.\n"
         "  --settings <path>       saved preset edits (default ~/.config/guitar-pedal-cpp/presets.conf)\n"
         "  --no-web                don't serve the web UI\n"
+        "  --no-lcd                leave the LCD1602 alone; LEDs and switch still arm\n"
         "  --simulate              start with the built-in signal generator on\n"
         "  --list                  list audio devices and exit\n";
 }
@@ -321,6 +323,7 @@ bool parse_args(int argc, char** argv, Options* opt) {
         else if (a == "--switches" && has_next) opt->switches = std::stoi(argv[++i]);
         else if (a == "--settings" && has_next) opt->settings = argv[++i];
         else if (a == "--no-web") opt->web = false;
+        else if (a == "--no-lcd") opt->lcd = false;
         else if (a == "--simulate") opt->simulate = true;
         else if (a == "--list") opt->list = true;
         else if (a == "-h" || a == "--help") { print_usage(); return false; }
@@ -675,14 +678,22 @@ int main(int argc, char** argv) {
         std::cerr << "Status LEDs unavailable (" << e.what() << ").\n";
     }
 
-    try {
-        lcd = std::make_unique<Lcd1602>(kGpioChip, kLcdPins);
-        lcd->write_line(0, "guitar-pedal-cpp");
-        lcd->write_line(1, "starting...");
-        have_lcd = true;
-        std::cout << "LCD1602 armed (RS=" << kLcdPins.rs << ", E=" << kLcdPins.enable << ").\n";
-    } catch (const std::exception& e) {
-        std::cerr << "LCD1602 unavailable (" << e.what() << ").\n";
+    // Nothing is wired to the LCD's twelve lines on this bench, and driving it
+    // means twelve line requests plus the HD44780 init sequence on every start.
+    // --no-lcd skips all of it; the LEDs and the footswitch are unaffected.
+    if (!opt.lcd) {
+        std::cout << "LCD1602 skipped (--no-lcd).\n";
+    } else {
+        try {
+            lcd = std::make_unique<Lcd1602>(kGpioChip, kLcdPins);
+            lcd->write_line(0, "guitar-pedal-cpp");
+            lcd->write_line(1, "starting...");
+            have_lcd = true;
+            std::cout << "LCD1602 armed (RS=" << kLcdPins.rs << ", E=" << kLcdPins.enable
+                      << ").\n";
+        } catch (const std::exception& e) {
+            std::cerr << "LCD1602 unavailable (" << e.what() << ").\n";
+        }
     }
 
     // One thread drives both LEDs and the LCD. 20 ms is fast enough that the blink edges

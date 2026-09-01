@@ -65,6 +65,25 @@
     align-items: start;
   }
   .col { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+  /* The middle column is a grid rather than a flex column purely so the top row
+     can be two panels wide. Everything else spans both tracks, so the column
+     still reads as a stack -- and every panel stays a direct child, which is
+     what the drag-to-reorder code walks. */
+  .col-mid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; align-content: start; }
+  .col-mid > * { grid-column: 1 / -1; min-width: 0; }
+  .col-mid > [data-panel="surface"],
+  .col-mid > [data-panel="transport"] { grid-column: auto; }
+  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px;
+         overflow: hidden; margin-bottom: 10px; }
+  .seg button { border: 0; border-radius: 0; background: transparent; color: var(--muted);
+                padding: 6px 14px; font-size: 12.5px; cursor: pointer; }
+  .seg button + button { border-left: 1px solid var(--line); }
+  .seg button.on { background: var(--accent-2); color: #06110c; font-weight: 600; }
+  .loops { display: flex; flex-direction: column; gap: 6px; }
+  .loop-row { display: flex; align-items: center; gap: 8px; }
+  .loop-row .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+                  white-space: nowrap; }
+  .loop-row .dur { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
   /* Only the parameter list is tall enough to need its own scroll; letting it
      scroll is what keeps everything else on one screen. */
   .col-left {
@@ -75,6 +94,9 @@
   @media (max-width: 1180px) {
     main { grid-template-columns: 1fr; }
     .col-left { position: static; max-height: none; overflow: visible; }
+    .col-mid { grid-template-columns: 1fr; }
+    .col-mid > [data-panel="surface"],
+    .col-mid > [data-panel="transport"] { grid-column: 1 / -1; }
   }
 
   section {
@@ -407,6 +429,49 @@ Shortcuts are ignored while a slider or text box has focus.">? keys</span>
       </dl>
     </section>
 
+    <section data-panel="transport">
+      <h2 tabindex="0" data-tip-title="Looper and Freeze"
+          data-tip="Both of these sit after the pedalboard rather than inside it, so they run on every preset.&#10;&#10;They are shown one at a time because the footswitch can only drive one at a time: with a single switch wired, the stomp does whichever is selected here. Choosing it in the browser rather than with a gesture on the switch is what keeps the press edge instant — a double-tap or long-press would delay the looper's boundary by the length of the gesture."><span class="grip" data-tip-title="Drag to reorder" data-tip="Drag this panel to a new position in the column. The order is remembered in this browser." aria-hidden="true">&#8681;</span>
+        Looper / Freeze <span class="i" aria-hidden="true">i</span>
+      </h2>
+
+      <div class="seg" role="tablist" aria-label="What the footswitch drives">
+        <button id="seg-looper" role="tab" aria-selected="true" class="on">Looper</button>
+        <button id="seg-freeze" role="tab" aria-selected="false">Freeze</button>
+      </div>
+      <div id="pane-looper">
+        <span id="loop-state" class="state-badge state-EMPTY">EMPTY</span>
+        <div class="loop-bar"><div class="fill" id="loop-fill"></div><div class="head" id="loop-head"></div></div>
+        <div class="scale"><span id="loop-pos">0.00 s</span><span id="loop-len">no loop</span></div>
+        <div class="row" style="margin-top:11px">
+          <button class="big" id="btn-trigger">Trigger</button>
+          <button class="big" id="btn-clear">Clear</button>
+          <button id="btn-loop-save" data-tip-title="Save this loop"
+                  data-tip="Writes the loop to disk as a mono 16-bit WAV under ~/.config/guitar-pedal-cpp/loops.&#10;&#10;Only works from PLAYING or EMPTY: while recording or overdubbing the audio thread is writing the buffer, and copying it out from under a writer would give you a torn loop.">Save…</button>
+        </div>
+        <p class="hint">
+          Trigger drives the same state machine as the footswitch:
+          empty &rarr; record &rarr; play &rarr; overdub &rarr; play. <span class="muted">(Space / c)</span>
+        </p>
+      </div>
+
+      <div id="pane-freeze" hidden>
+        <div class="row">
+          <button class="big" id="btn-freeze" data-tip-title="Freeze"
+                  data-tip="Grabs the last fraction of a second and loops it as a drone while you keep playing over it.&#10;&#10;Unlike the looper, freeze takes whatever happened to be in the buffer the instant you hit it — you use it to turn a chord you just played into a pad, not to build an arrangement. (f)">Freeze</button>
+        </div>
+        <p class="hint">
+          With Freeze selected, the footswitch is momentary or latching depending on how you use it:
+          <b>tap</b> to latch it on, <b>hold past 400&nbsp;ms</b> and it lets go when your foot lifts.
+          Capture always fires on the press, so the drone starts under your foot.
+        </p>
+        <p class="hint muted">
+          Sounds choppy? It loops a slice of audio, so a short grain repeats audibly.
+          Push <b>Grain ms</b> up and set <b>Hold</b> to 1.0 in the Parameters panel.
+        </p>
+      </div>
+    </section>
+
     <section data-panel="scope">
       <h2 tabindex="0" data-tip-title="Waveform"
           data-tip="A 2048-frame window of the signal, sampled every 4th frame and redrawn about 15 times a second. At 48 kHz that window is ~43 ms — roughly two cycles of a low E string.&#10;&#10;It is pulled by the browser rather than pushed, and read out of a lock-free buffer, so a slow browser can never stall the audio thread. Vertical range is -1.2 to +1.2; a trace flat against the top or bottom is clipping."><span class="grip" data-tip-title="Drag to reorder" data-tip="Drag this panel to a new position in the column. The order is remembered in this browser." aria-hidden="true">⁙</span>
@@ -453,6 +518,17 @@ Shortcuts are ignored while a slider or text box has focus.">? keys</span>
         </div>
       </div>
     </details>
+
+    <section data-panel="loops">
+      <h2 tabindex="0" data-tip-title="Saved loops"
+          data-tip="Loops written to disk as mono 16-bit WAV under ~/.config/guitar-pedal-cpp/loops.&#10;&#10;WAV rather than a private format so a loop is worth something outside this program — it opens in any DAW or player.&#10;&#10;Loading swaps the loop in on the audio thread as a pointer exchange, so it costs nothing and cannot miss a deadline. A loop recorded at a different sample rate is refused rather than played back at the wrong pitch."><span class="grip" data-tip-title="Drag to reorder" data-tip="Drag this panel to a new position in the column. The order is remembered in this browser." aria-hidden="true">&#8681;</span>
+        Saved loops <span class="i" aria-hidden="true">i</span>
+        <span class="spacer"></span>
+        <button class="tiny" id="btn-loops-refresh">refresh</button>
+      </h2>
+      <div class="loops" id="loops-list"></div>
+      <p class="hint" id="loops-empty">Nothing saved yet. Record a loop, stop recording, then <b>Save…</b> in the Looper panel.</p>
+    </section>
 
     <section data-panel="setlist">
       <h2 tabindex="0" data-tip-title="Setlist"
@@ -535,41 +611,6 @@ Shortcuts are ignored while a slider or text box has focus.">? keys</span>
               data-tip="Feeds a generated test signal through the whole DSP chain instead of the sound card, so the effects can be exercised with no guitar and no interface attached. It is disabled whenever the card is running: both would otherwise be driving the same chain.">
           <button id="btn-sim">Simulate input</button>
         </span>
-      </div>
-    </section>
-
-    <section>
-      <h2 tabindex="0" data-tip-title="Looper states"
-          data-tip="EMPTY — nothing recorded. Trigger starts recording.
-RECORDING — capturing. Trigger closes the loop at that instant and starts playing it.
-PLAYING — the loop repeats under you. Trigger arms overdub.
-OVERDUBBING — what you play is added on top of the existing loop, once per pass. Trigger goes back to playing.
-
-Clear wipes it back to EMPTY from any state.
-
-The trigger only sets a flag; the state change itself happens on the audio thread at the top of the next buffer, so a foot stomp and a browser click take exactly the same path.">
-        Looper <span class="i" aria-hidden="true">i</span>
-      </h2>
-      <span id="loop-state" class="state-badge state-EMPTY">EMPTY</span>
-      <div class="loop-bar"><div class="fill" id="loop-fill"></div><div class="head" id="loop-head"></div></div>
-      <div class="scale"><span id="loop-pos">0.00 s</span><span id="loop-len">no loop</span></div>
-      <div class="row" style="margin-top:11px">
-        <button class="big" id="btn-trigger">Trigger</button>
-        <button class="big" id="btn-clear">Clear</button>
-      </div>
-      <p class="hint">
-        Trigger drives the same state machine as the looper footswitch:
-        empty &rarr; record &rarr; play &rarr; overdub &rarr; play. <span class="muted">(Space / c)</span>
-      </p>
-
-      <div class="freeze-row">
-        <button class="big" id="btn-freeze" data-tip-title="Freeze"
-                data-tip="Grabs the last fraction of a second and loops it as a drone while you keep playing over it. Press again to let it go.&#10;&#10;Unlike the looper, freeze takes whatever happened to be in the buffer the instant you hit it — you use it to turn a chord you just played into a pad, not to build an arrangement.&#10;&#10;Runs on every preset: it sits after the pedalboard, like the looper, rather than being a stage that only some chains include. (f)">Freeze</button>
-        <label class="mode-toggle" id="mode-toggle" data-tip-title="What the footswitch does"
-               data-tip="With one switch wired, the stomp can only do one job at a time, so you choose it here rather than with a gesture on the switch. That keeps the press edge instant — a double-tap or long-press would delay the looper's boundary by the length of the gesture.&#10;&#10;Wire the second switch and this goes away: switch 1 stays on the looper permanently.">
-          <input type="checkbox" id="mode-freeze">
-          <span>Footswitch drives freeze</span>
-        </label>
       </div>
     </section>
 
@@ -1140,11 +1181,28 @@ function restorePanelOrder() {
   try { ids = JSON.parse(localStorage.getItem(PANEL_ORDER_KEY) || "null"); } catch (e) { ids = null; }
   if (!Array.isArray(ids)) return;
   const col = panelColumn();
-  // Append in saved order; anything the saved list does not mention (a panel
-  // added by a later build) keeps its place at the end rather than vanishing.
+
+  // The markup order is the default, and it is the only record of where a new
+  // panel belongs. Capture it before reordering: appending in saved order alone
+  // would dump every panel added since that order was stored at the bottom,
+  // which is how "Saved loops sits under Effects" quietly stops being true for
+  // anyone who has ever dragged a panel.
+  const defaults = [...col.children].map((el) => el.dataset.panel).filter(Boolean);
+
   for (const id of ids) {
     const el = col.querySelector(':scope > [data-panel="' + CSS.escape(id) + '"]');
     if (el) col.appendChild(el);
+  }
+
+  for (const id of defaults) {
+    if (ids.includes(id)) continue;
+    const el = col.querySelector(':scope > [data-panel="' + CSS.escape(id) + '"]');
+    if (!el) continue;
+    // Put it back in front of whichever panel followed it by default.
+    const after = defaults.slice(defaults.indexOf(id) + 1)
+                          .map((n) => col.querySelector(':scope > [data-panel="' + CSS.escape(n) + '"]'))
+                          .find(Boolean);
+    col.insertBefore(el, after || null);
   }
 }
 
@@ -1239,10 +1297,14 @@ function render(s) {
 
   $("btn-freeze").classList.toggle("on", !!s.frozen);
   $("btn-freeze").textContent = s.frozen ? "Frozen \u2014 release" : "Freeze";
-  $("mode-freeze").checked = !!s.freeze_mode;
+  setTransportTab(!!s.freeze_mode);
   // With two switches wired the stomp is always the looper, so the choice is
   // meaningless and the control should not be there to confuse.
-  $("mode-toggle").classList.toggle("hidden", !!(s.gpio && s.gpio.utility_switch));
+  // With two switches wired, switch 1 stays on the looper permanently, so the
+  // choice stops being a choice and the tabs become a plain view switch.
+  $("seg-freeze").title = (s.gpio && s.gpio.utility_switch)
+    ? "Switch 2 is wired, so the footswitch stays on the looper"
+    : "The footswitch drives freeze while this is selected";
 
   const sel = cfg && cfg.presets && cfg.presets[s.preset];
   if (sel) {
@@ -1500,8 +1562,86 @@ initPanelDragging();
 makeTipsReachable();
 fitCanvas();
 $("btn-freeze").onclick = () => post("/api/freeze", {});
-$("mode-freeze").onchange = (e) =>
-  post("/api/freeze", { action: "mode", value: e.target.checked ? 1 : 0 });
+function setTransportTab(freeze) {
+  $("seg-looper").classList.toggle("on", !freeze);
+  $("seg-freeze").classList.toggle("on", freeze);
+  $("seg-looper").setAttribute("aria-selected", String(!freeze));
+  $("seg-freeze").setAttribute("aria-selected", String(freeze));
+  $("pane-looper").hidden = freeze;
+  $("pane-freeze").hidden = !freeze;
+}
+// Selecting a tab is not a view preference -- it is what the footswitch does --
+// so it posts the mode and lets the next state poll confirm it landed.
+$("seg-looper").onclick = () => post("/api/freeze", { action: "mode", value: 0 });
+$("seg-freeze").onclick = () => post("/api/freeze", { action: "mode", value: 1 });
+
+
+/* -------------------------------------------------------- saved loops -- */
+// These POSTs need their reply, unlike post(), because saving is the one action
+// here that routinely fails for a reason the player has to hear: nothing
+// recorded, a name with nothing usable in it, a rate mismatch, a full disk.
+async function loopAction(action, name) {
+  try {
+    const q = new URLSearchParams({ action, name }).toString();
+    const r = await fetch("/api/loops?" + q, { method: "POST" });
+    const d = await r.json().catch(() => ({}));
+    if (!d.ok && d.error) window.alert(d.error);
+  } catch (e) { /* the disconnect indicator already says it */ }
+  refreshLoops();
+}
+
+async function refreshLoops() {
+  let loops = [];
+  try {
+    const r = await fetch("/api/loops");
+    loops = (await r.json()).loops || [];
+  } catch (e) { return; }
+
+  const list = $("loops-list");
+  list.textContent = "";
+  $("loops-empty").hidden = loops.length > 0;
+
+  for (const l of loops) {
+    const row = document.createElement("div");
+    row.className = "loop-row";
+
+    // textContent throughout: a loop name is sanitised on the way to disk, but
+    // a file dropped into the directory by hand has never been near that check.
+    const nm = document.createElement("span");
+    nm.className = "nm";
+    nm.textContent = l.name;
+    nm.title = l.name;
+
+    const dur = document.createElement("span");
+    dur.className = "dur";
+    dur.textContent = (l.seconds || 0).toFixed(2) + " s";
+
+    const load = document.createElement("button");
+    load.className = "tiny";
+    load.textContent = "load";
+    load.onclick = () => loopAction("load", l.name);
+
+    const del = document.createElement("button");
+    del.className = "tiny";
+    del.textContent = "delete";
+    del.onclick = () => {
+      if (window.confirm("Delete \u201c" + l.name + "\u201d? This cannot be undone.")) {
+        loopAction("delete", l.name);
+      }
+    };
+
+    row.append(nm, dur, load, del);
+    list.appendChild(row);
+  }
+}
+
+$("btn-loops-refresh").onclick = refreshLoops;
+$("btn-loop-save").onclick = () => {
+  const name = window.prompt("Name this loop");
+  if (name === null) return;
+  loopAction("save", name);
+};
+refreshLoops();
 
 $("preset-note").addEventListener("blur", saveNote);
 // Ctrl/Cmd+Enter commits without leaving the box.

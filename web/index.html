@@ -942,10 +942,10 @@ async function loadConfig() {
     b.setAttribute("data-tip-title", p.name);
     b.setAttribute("data-tip", presetTip(p));
     b.dataset.preset = String(i);
-    b.onclick = () => {
-      post("/api/preset", { value: i });
-      $("fx-picker").open = false;
-    };
+    // Deliberately leaves the picker open: choosing a sound is nearly always
+    // several tries in a row, and closing it after each one means reopening it
+    // and finding your place again between every comparison.
+    b.onclick = () => post("/api/preset", { value: i });
     holder.appendChild(b);
   });
 

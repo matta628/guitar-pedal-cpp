@@ -202,7 +202,10 @@ int run_clicks(unsigned int line) {
     return 0;
 }
 
-constexpr Lcd1602::Pins kLcdPins{/*rs=*/5, /*enable=*/6, /*d4=*/13, /*d5=*/19, /*d6=*/26, /*d7=*/16};
+// Must match kLcdPins in src/main.cpp. D7 moved from GPIO16 (pin 36) to GPIO20
+// (pin 38) on 2026-08-30; this copy was missed, so the tool drove a line nothing
+// was wired to and the panel never finished its 4-bit init.
+constexpr Lcd1602::Pins kLcdPins{/*rs=*/5, /*enable=*/6, /*d4=*/13, /*d5=*/19, /*d6=*/26, /*d7=*/20};
 
 int run_lcd() {
     Lcd1602 lcd(kChip, kLcdPins);

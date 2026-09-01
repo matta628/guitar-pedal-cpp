@@ -10,7 +10,11 @@ class Looper : public Effect {
 public:
     enum class State { Empty, Recording, Playing, Overdubbing };
 
-    explicit Looper(float sample_rate, float max_loop_seconds = 30.0f);
+    // The buffer is allocated once, here, because the audio callback may not
+    // allocate -- so the maximum length has to be chosen up front rather than
+    // grown on demand. It is not a musical limit, only a memory one: mono
+    // float at 48 kHz costs ~192 kB per second, so 120 s is ~23 MB.
+    explicit Looper(float sample_rate, float max_loop_seconds = 120.0f);
 
     // Safe to call from any thread (e.g. a keyboard/GPIO listener). Only sets
     // a flag; the actual state transition happens on the audio thread at the

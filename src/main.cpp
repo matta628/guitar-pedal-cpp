@@ -102,8 +102,8 @@ struct PedalChain {
     std::vector<float> mono;
     unsigned int out_channels = 1;
 
-    explicit PedalChain(float sample_rate)
-        : board(sample_rate), freeze(sample_rate), looper(sample_rate) {}
+    PedalChain(float sample_rate, float loop_seconds)
+        : board(sample_rate), freeze(sample_rate), looper(sample_rate, loop_seconds) {}
 
     // Call before the stream is started, never while it is running.
     void prepare(unsigned int max_frames, unsigned int channels) {
@@ -276,6 +276,7 @@ struct Options {
     std::string out_device;   // defaults to the input device
     unsigned int rate = 0;    // 0 = whatever the device prefers
     unsigned int frames = 256;
+    float loop_seconds = 120.0f;  // looper buffer, allocated once at startup
     std::uint16_t port = 8080;
     std::string settings;     // empty = the default path under $HOME
     bool web = true;
@@ -295,6 +296,8 @@ void print_usage() {
         "  --rate <hz>             sample rate (default: whatever the device prefers)\n"
         "  --frames <n>            buffer size in frames (default 256)\n"
         "  --port <n>              web UI port (default 8080)\n"
+        "  --loop-seconds <n>      max loop length (default 120). Allocated once at\n"
+        "                          startup: mono float costs ~192 kB per second at 48 kHz.\n"
         "  --switches <1|2>        footswitches wired (default 1). 1: the switch drives\n"
         "                          the looper and the web UI does everything else.\n"
         "                          2: switch 2 taps to clear, double-taps to step the setlist.\n"
@@ -312,6 +315,7 @@ bool parse_args(int argc, char** argv, Options* opt) {
         else if (a == "--out-device" && has_next) opt->out_device = argv[++i];
         else if (a == "--rate" && has_next) opt->rate = std::stoul(argv[++i]);
         else if (a == "--frames" && has_next) opt->frames = std::stoul(argv[++i]);
+        else if (a == "--loop-seconds" && has_next) opt->loop_seconds = std::stof(argv[++i]);
         else if (a == "--port" && has_next) opt->port = static_cast<std::uint16_t>(std::stoul(argv[++i]));
         else if (a == "--switches" && has_next) opt->switches = std::stoi(argv[++i]);
         else if (a == "--settings" && has_next) opt->settings = argv[++i];
@@ -415,7 +419,7 @@ int main(int argc, char** argv) {
 
     unsigned int buffer_frames = opt.frames;
 
-    PedalChain chain(static_cast<float>(sample_rate));
+    PedalChain chain(static_cast<float>(sample_rate), opt.loop_seconds);
     // Sized once, here, because record() runs on the audio thread and must
     // never allocate.
     chain.stats.configure(chain.board.preset_count());
@@ -556,21 +560,46 @@ int main(int argc, char** argv) {
     std::unique_ptr<GpioLed> preset_led;
     std::unique_ptr<Lcd1602> lcd;
 
+    // Longer than a stomp, shorter than a deliberate hold. Only ever touched
+    // from GpioButton's poll thread, which raises both edges, so it needs no
+    // synchronisation. Declared before the switch so it outlives it.
+    constexpr auto kFreezeHoldThreshold = std::chrono::milliseconds(400);
+    bool freeze_captured_by_press = false;
+
     try {
         looper_switch = std::make_unique<GpioButton>(kGpioChip, kLooperSwitchLine);
-        // Still a bare press handler, deliberately: the mode is chosen in the
-        // browser, so the stomp itself needs no gesture and fires the instant
-        // the foot lands.
+        // The mode is chosen in the browser, so the stomp itself needs no
+        // gesture and fires the instant the foot lands.
         looper_switch->start([&]() {
             if (opt.switches < 2 &&
                 chain.mode.load(std::memory_order_relaxed) == ControlMode::Freeze) {
-                chain.freeze.toggle();
-                if (web) web->log(chain.freeze.frozen() ? "footswitch: freeze captured"
-                                                        : "footswitch: freeze released");
+                // Capture always fires on the press, never on the release, so
+                // the drone starts under the foot rather than after it lifts.
+                // Whether it also *ends* there is decided below, on release.
+                if (chain.freeze.frozen()) {
+                    chain.freeze.release();
+                    freeze_captured_by_press = false;
+                    if (web) web->log("footswitch: freeze released");
+                } else {
+                    chain.freeze.capture();
+                    freeze_captured_by_press = true;
+                    if (web) web->log("footswitch: freeze captured");
+                }
                 return;
             }
             chain.looper.on_trigger();
             if (web) web->log("footswitch: looper trigger");
+        });
+        // Tap to latch, hold for momentary. Both behaviours out of one switch,
+        // and neither costs any latency: the press already did the capture, so
+        // the release only has to decide whether to undo it.
+        looper_switch->set_release_handler([&](std::chrono::milliseconds held) {
+            if (!freeze_captured_by_press) return;
+            freeze_captured_by_press = false;
+            if (held < kFreezeHoldThreshold) return;  // a tap: leave it latched
+            if (chain.mode.load(std::memory_order_relaxed) != ControlMode::Freeze) return;
+            chain.freeze.release();
+            if (web) web->log("footswitch: freeze released (hold)");
         });
         have_looper_switch = true;
         std::cout << "Looper footswitch armed on line " << kLooperSwitchLine

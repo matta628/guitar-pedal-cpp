@@ -90,6 +90,10 @@ void GpioButton::start(std::function<void()> on_press, std::function<void()> on_
     thread_ = std::thread(&GpioButton::poll_loop, this);
 }
 
+void GpioButton::set_release_handler(std::function<void(std::chrono::milliseconds)> on_release) {
+    on_release_ = std::move(on_release);
+}
+
 void GpioButton::stop() {
     running_.store(false, std::memory_order_relaxed);
     if (thread_.joinable()) {
@@ -105,6 +109,7 @@ void GpioButton::poll_loop() {
     }
     gpiod_line_value last_seen = last_stable;
     auto last_change = std::chrono::steady_clock::now();
+    auto pressed_at = last_change;
 
     while (running_.load(std::memory_order_relaxed)) {
         std::this_thread::sleep_for(kPollInterval);
@@ -129,8 +134,15 @@ void GpioButton::poll_loop() {
             const bool pressed =
                 (last_stable == GPIOD_LINE_VALUE_ACTIVE && value == GPIOD_LINE_VALUE_INACTIVE);
             last_stable = value;
-            if (pressed && on_press_) {
-                on_press_();
+            if (pressed) {
+                // Timed from the debounced edge, not the raw one, so the
+                // duration excludes contact bounce rather than counting it.
+                pressed_at = now;
+                if (on_press_) {
+                    on_press_();
+                }
+            } else if (on_release_) {
+                on_release_(std::chrono::duration_cast<std::chrono::milliseconds>(now - pressed_at));
             }
         }
     }

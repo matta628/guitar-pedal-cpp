@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <functional>
 #include <string>
 #include <thread>
@@ -29,6 +30,16 @@ public:
     // so callers needing their own timeouts (ClickDetector) don't have to
     // start a second thread to get one.
     void start(std::function<void()> on_press, std::function<void()> on_tick = {});
+
+    // on_release fires once per debounced press->release transition, with how
+    // long the switch was actually held. The poll loop already computes both
+    // edges to debounce them; this just stops throwing the second one away.
+    //
+    // Why a duration rather than a separate on_hold(): a hold cannot be
+    // reported the moment it passes a threshold without either a timer or
+    // deciding the threshold in here. Handing the caller the measured time on
+    // release lets it choose its own cutoff, and costs nothing.
+    void set_release_handler(std::function<void(std::chrono::milliseconds)> on_release);
     void stop();
 
 private:
@@ -40,6 +51,7 @@ private:
 
     std::function<void()> on_press_;
     std::function<void()> on_tick_;
+    std::function<void(std::chrono::milliseconds)> on_release_;
     std::thread thread_;
     std::atomic<bool> running_{false};
 };

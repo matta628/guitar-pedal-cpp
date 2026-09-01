@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "AudioDevice.h"
+#include "LoopStore.h"
 #include "Looper.h"
 #include "Pedalboard.h"
 #include "Freeze.h"
@@ -353,6 +354,26 @@ std::string stats_path(const std::string& settings) {
     return dir + "/preset-levels.csv";
 }
 
+std::string loops_dir(const std::string& settings) {
+    const std::string base = settings.empty() ? default_settings_path() : settings;
+    const std::size_t slash = base.find_last_of('/');
+    const std::string dir = (slash == std::string::npos) ? std::string(".") : base.substr(0, slash);
+    return dir + "/loops";
+}
+
+// Loop names are sanitised on the way in, so this only has to cope with a file
+// somebody dropped into the directory by hand.
+std::string json_str(const std::string& s) {
+    std::string out = "\"";
+    for (const char c : s) {
+        if (c == '"' || c == '\\') { out += '\\'; out += c; }
+        else if (static_cast<unsigned char>(c) < 0x20) { out += ' '; }
+        else out += c;
+    }
+    out += '"';
+    return out;
+}
+
 void write_preset_levels(PedalChain& chain, const std::string& settings, std::ostream* report) {
     std::vector<std::string> names;
     names.reserve(chain.board.presets().size());
@@ -420,6 +441,7 @@ int main(int argc, char** argv) {
     unsigned int buffer_frames = opt.frames;
 
     PedalChain chain(static_cast<float>(sample_rate), opt.loop_seconds);
+    LoopStore loop_store(loops_dir(opt.settings));
     // Sized once, here, because record() runs on the audio thread and must
     // never allocate.
     chain.stats.configure(chain.board.preset_count());
@@ -787,6 +809,64 @@ int main(int argc, char** argv) {
             }
             return notes;
         };
+        cb.loops_list = [&]() {
+            std::string j = "[";
+            bool first = true;
+            for (const auto& e : loop_store.list()) {
+                if (!first) j += ",";
+                first = false;
+                j += "{\"name\":" + json_str(e.name) +
+                     ",\"seconds\":" + std::to_string(e.seconds) +
+                     ",\"frames\":" + std::to_string(e.frames) +
+                     ",\"rate\":" + std::to_string(e.rate) + "}";
+            }
+            j += "]";
+            return j;
+        };
+
+        cb.loop_save = [&](std::string name) -> std::string {
+            std::vector<float> samples;
+            if (!chain.looper.snapshot(&samples)) {
+                return "nothing to save -- record a loop, and stop recording before saving";
+            }
+            std::string err;
+            const auto rate = static_cast<unsigned int>(chain.looper.sample_rate());
+            if (!loop_store.save(name, samples, rate, &err)) return err;
+            if (web) web->log("loop saved: " + LoopStore::sanitise(name));
+            return "";
+        };
+
+        cb.loop_load = [&](std::string name) -> std::string {
+            std::vector<float> samples;
+            unsigned int rate = 0;
+            std::string err;
+            if (!loop_store.load(name, &samples, &rate, &err)) return err;
+            // Playing a 44.1 kHz loop through a 48 kHz stream shifts it up
+            // about a tone and shortens it. Refusing is honest; resampling on
+            // load would be the fix, and is not written yet.
+            const auto now_rate = static_cast<unsigned int>(chain.looper.sample_rate());
+            if (rate != 0 && rate != now_rate) {
+                return "that loop was recorded at " + std::to_string(rate) +
+                       " Hz and the stream is running at " + std::to_string(now_rate) +
+                       " Hz -- it would play back at the wrong pitch";
+            }
+            if (!chain.looper.load(samples)) {
+                return "loop is " + std::to_string(samples.size() / (now_rate ? now_rate : 1)) +
+                       " s and the buffer holds " +
+                       std::to_string(chain.looper.capacity() / (now_rate ? now_rate : 1)) +
+                       " s -- restart with a bigger --loop-seconds";
+            }
+            if (web) web->log("loop loaded: " + LoopStore::sanitise(name));
+            return "";
+        };
+
+        cb.loop_delete = [&](std::string name) -> std::string {
+            std::string err;
+            if (!loop_store.remove(name, &err)) return err;
+            if (web) web->log("loop deleted: " + LoopStore::sanitise(name));
+            return "";
+        };
+
         cb.freeze_toggle = [&]() {
             chain.freeze.toggle();
             if (web) web->log(chain.freeze.frozen() ? "web: freeze captured" : "web: freeze released");

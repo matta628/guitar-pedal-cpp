@@ -34,6 +34,7 @@ add_library(pedal_dsp STATIC
   src/Freeze.cpp
   src/Fuzz.cpp
   src/LedPattern.cpp
+  src/LoopStore.cpp
   src/Looper.cpp
   src/Pedalboard.cpp
   src/Phaser.cpp

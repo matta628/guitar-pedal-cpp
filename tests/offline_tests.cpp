@@ -25,6 +25,7 @@
 #include "Flanger.h"
 #include "Fuzz.h"
 #include "LedPattern.h"
+#include "LoopStore.h"
 #include "Looper.h"
 #include "Pedalboard.h"
 #include "Phaser.h"
@@ -1171,6 +1172,81 @@ void test_pedalboard_ignores_a_settings_file_it_cannot_understand() {
 
 }  // namespace
 
+
+void test_loop_store_sanitises_names() {
+    // A loop name arrives from a browser and becomes a path, so this is the
+    // check that stops it becoming somebody else's path.
+    check(LoopStore::sanitise("../../.ssh/authorized_keys") == "sshauthorized_keys",
+          "LoopStore: path traversal collapses to a harmless name");
+    check(LoopStore::sanitise("/etc/passwd") == "etcpasswd",
+          "LoopStore: leading slash cannot escape the loops directory");
+    check(LoopStore::sanitise("night  take-2_final") == "night  take-2_final",
+          "LoopStore: spaces, hyphens and underscores survive");
+    check(LoopStore::sanitise("   ") == "", "LoopStore: a name of only spaces is rejected");
+    check(LoopStore::sanitise("") == "", "LoopStore: an empty name is rejected");
+    check(LoopStore::sanitise("!!!") == "", "LoopStore: a name of only punctuation is rejected");
+    check(LoopStore::sanitise(std::string(200, 'a')).size() == 64,
+          "LoopStore: absurdly long names are truncated");
+}
+
+void test_loop_store_round_trips_a_loop() {
+    const std::filesystem::path dir =
+        std::filesystem::temp_directory_path() / "guitar-pedal-loop-test";
+    std::filesystem::remove_all(dir);
+    LoopStore store(dir.string());
+
+    std::vector<float> samples;
+    for (int i = 0; i < 480; ++i) {
+        samples.push_back(std::sin(static_cast<float>(i) * 0.05f) * 0.8f);
+    }
+
+    std::string err;
+    check(store.save("take one", samples, 48000, &err), "LoopStore: save succeeds");
+
+    const auto listed = store.list();
+    check(listed.size() == 1, "LoopStore: the saved loop is listed");
+    check(listed[0].name == "take one", "LoopStore: the name round-trips");
+    check(listed[0].frames == samples.size(), "LoopStore: the frame count round-trips");
+    check(listed[0].rate == 48000, "LoopStore: the sample rate round-trips");
+
+    std::vector<float> back;
+    unsigned int rate = 0;
+    check(store.load("take one", &back, &rate, &err), "LoopStore: load succeeds");
+    check(rate == 48000, "LoopStore: loaded rate matches");
+    check(back.size() == samples.size(), "LoopStore: loaded length matches");
+
+    // 16-bit quantisation, so exact equality is the wrong test. One LSB is
+    // 1/32768; allow two to cover the round-trip's rounding at both ends.
+    float worst = 0.0f;
+    for (std::size_t i = 0; i < back.size(); ++i) {
+        worst = std::max(worst, std::fabs(back[i] - samples[i]));
+    }
+    check(worst < 2.0f / 32768.0f, "LoopStore: samples survive within 16-bit quantisation");
+
+    check(store.remove("take one", &err), "LoopStore: delete succeeds");
+    check(store.list().empty(), "LoopStore: the loop is gone after deleting");
+    std::filesystem::remove_all(dir);
+}
+
+void test_looper_loads_a_saved_loop_without_allocating() {
+    Looper looper(48000.0f, 1.0f);
+    const std::vector<float> loop = {0.5f, -0.25f, 0.125f, -0.0625f};
+    check(looper.load(loop), "Looper: accepts a loop that fits");
+
+    // The swap happens inside process(), so nothing is live until one runs.
+    std::vector<float> block(4, 0.0f);
+    looper.process(block.data(), block.size());
+    check(looper.state() == Looper::State::Playing, "Looper: a loaded loop lands in Playing");
+    check(looper.length() == loop.size(), "Looper: loaded length is published");
+    for (std::size_t i = 0; i < block.size(); ++i) {
+        check(std::fabs(block[i] - loop[i]) < 1e-6f, "Looper: loaded samples play back");
+    }
+
+    Looper small(48000.0f, 0.001f);  // 48 samples
+    check(!small.load(std::vector<float>(100, 0.0f)),
+          "Looper: refuses a loop longer than its buffer rather than truncating");
+}
+
 int main() {
     test_distortion_bypass();
     test_distortion_bounds_overdriven_input();
@@ -1180,6 +1256,9 @@ int main() {
     test_reverb_silence_stays_silent();
     test_reverb_impulse_produces_bounded_decaying_tail();
     test_looper_record_and_play_back();
+    test_loop_store_sanitises_names();
+    test_loop_store_round_trips_a_loop();
+    test_looper_loads_a_saved_loop_without_allocating();
     test_looper_overdub_layers_and_decays();
     test_wave_folder_folds_rather_than_clips();
     test_env_filter_opens_with_level();

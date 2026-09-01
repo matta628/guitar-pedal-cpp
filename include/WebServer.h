@@ -103,6 +103,15 @@ public:
         // Persist the current knob positions for the selected preset, drop
         // them again, or drop every preset's. These write to disk, which is
         // fine on the web thread and unthinkable on the audio thread.
+        // Saved loops. All four run on the web thread and touch the
+        // filesystem, which is why they return a message rather than throwing:
+        // a full disk or a bad name is something the browser should say out
+        // loud, not something that kills the audio thread's neighbour.
+        std::function<std::string()> loops_list;             // a JSON array
+        std::function<std::string(std::string)> loop_save;   // "" on success, else the reason
+        std::function<std::string(std::string)> loop_load;
+        std::function<std::string(std::string)> loop_delete;
+
         std::function<void()> save_preset;
         std::function<void()> reset_preset;
         std::function<void()> reset_all_presets;

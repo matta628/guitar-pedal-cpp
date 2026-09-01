@@ -502,6 +502,32 @@ void WebServer::route(Connection& c, const std::string& method, const std::strin
         return;
     }
 
+    if (!is_post && path == "/api/loops") {
+        const std::string body = callbacks_.loops_list ? callbacks_.loops_list() : "[]";
+        c.out_buf += http_response("200 OK", "application/json", "{\"loops\":" + body + "}");
+        c.close_when_drained = true;
+        return;
+    }
+
+    if (is_post && path == "/api/loops") {
+        const std::string action = query_get(query, "action");
+        const std::string name = query_get(query, "name");
+        std::string err = "unknown action";
+        if (action == "save" && callbacks_.loop_save) {
+            err = callbacks_.loop_save(name);
+        } else if (action == "load" && callbacks_.loop_load) {
+            err = callbacks_.loop_load(name);
+        } else if (action == "delete" && callbacks_.loop_delete) {
+            err = callbacks_.loop_delete(name);
+        }
+        const bool ok = err.empty();
+        c.out_buf += http_response(ok ? "200 OK" : "400 Bad Request", "application/json",
+                                   ok ? "{\"ok\":true}"
+                                      : "{\"ok\":false,\"error\":\"" + json_escape(err) + "\"}");
+        c.close_when_drained = true;
+        return;
+    }
+
     if (is_post && path == "/api/looper") {
         const std::string action = query_get(query, "action");
         if (action == "trigger" && callbacks_.looper_trigger) {

@@ -3,7 +3,27 @@
 #include <algorithm>
 
 Looper::Looper(float sample_rate, float max_loop_seconds)
-    : buffer_(static_cast<std::size_t>(max_loop_seconds * sample_rate), 0.0f) {}
+    : sample_rate_(sample_rate),
+      buffer_(static_cast<std::size_t>(max_loop_seconds * sample_rate), 0.0f),
+      spare_(static_cast<std::size_t>(max_loop_seconds * sample_rate), 0.0f) {}
+
+bool Looper::snapshot(std::vector<float>* out) const {
+    const State s = published_state_.load(std::memory_order_relaxed);
+    if (s == State::Recording || s == State::Overdubbing) return false;
+    const std::size_t n = published_length_.load(std::memory_order_relaxed);
+    if (n == 0 || n > buffer_.size()) return false;
+    out->assign(buffer_.begin(), buffer_.begin() + static_cast<std::ptrdiff_t>(n));
+    return true;
+}
+
+bool Looper::load(const std::vector<float>& samples) {
+    if (load_pending_.load(std::memory_order_acquire)) return false;  // one in flight already
+    if (samples.empty() || samples.size() > spare_.size()) return false;
+    std::copy(samples.begin(), samples.end(), spare_.begin());
+    pending_load_length_ = samples.size();
+    load_pending_.store(true, std::memory_order_release);
+    return true;
+}
 
 void Looper::on_trigger() { trigger_pending_.store(true, std::memory_order_relaxed); }
 
@@ -18,6 +38,18 @@ void Looper::set_level(float level) {
 }
 
 void Looper::process(float* buffer, std::size_t n_frames) {
+    if (load_pending_.load(std::memory_order_acquire)) {
+        // vector::swap exchanges internal pointers. No allocation, no copy, and
+        // the old contents leave with the spare, which is scratch anyway.
+        buffer_.swap(spare_);
+        loop_length_ = pending_load_length_;
+        write_index_ = loop_length_;
+        read_index_ = 0;
+        state_ = State::Playing;
+        trigger_pending_.store(false, std::memory_order_relaxed);
+        load_pending_.store(false, std::memory_order_release);
+    }
+
     if (clear_pending_.exchange(false, std::memory_order_relaxed)) {
         write_index_ = 0;
         read_index_ = 0;

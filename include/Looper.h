@@ -52,8 +52,35 @@ public:
 
     void process(float* buffer, std::size_t n_frames) override;
 
+    // --- saving and restoring loops -------------------------------------
+    //
+    // snapshot() copies the recorded loop out for the web thread to write to
+    // disk. It refuses while Recording or Overdubbing, because those are the
+    // only states in which the audio thread writes buffer_, and copying out
+    // from under a writer is a data race. In Playing and Empty the audio
+    // thread only reads, so a concurrent read is safe.
+    bool snapshot(std::vector<float>* out) const;
+
+    // load() is called from the web thread with a loop read off disk. The copy
+    // happens *here*, on that thread, into a spare buffer allocated at
+    // construction -- then the audio thread swaps the two vectors, which is a
+    // pointer exchange and allocates nothing. That is the whole reason the
+    // spare exists: without it, loading would either allocate in the callback
+    // or memcpy up to 23 MB inside it, and both are ways to miss a deadline.
+    //
+    // Returns false if a previous load has not been picked up yet, or if the
+    // loop is longer than the buffer this looper was built with.
+    bool load(const std::vector<float>& samples);
+
+    float sample_rate() const { return sample_rate_; }
+    std::size_t capacity() const { return buffer_.size(); }
+
 private:
+    float sample_rate_ = 48000.0f;
     std::vector<float> buffer_;
+    std::vector<float> spare_;          // staging for load(); swapped in, never allocated in process()
+    std::size_t pending_load_length_ = 0;
+    std::atomic<bool> load_pending_{false};
     std::size_t write_index_ = 0;
     std::size_t read_index_ = 0;
     std::size_t loop_length_ = 0;

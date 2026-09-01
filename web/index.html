@@ -78,7 +78,7 @@
   .seg button { border: 0; border-radius: 0; background: transparent; color: var(--muted);
                 padding: 6px 14px; font-size: 12.5px; cursor: pointer; }
   .seg button + button { border-left: 1px solid var(--line); }
-  .seg button.on { background: var(--accent-2); color: #06110c; font-weight: 600; }
+  .seg button.on { background: var(--accent-dark); color: var(--accent); font-weight: 600; }
   .loops { display: flex; flex-direction: column; gap: 6px; }
   .loop-row { display: flex; align-items: center; gap: 8px; }
   .loop-row .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
@@ -189,9 +189,6 @@
     padding-top: 12px; border-top: 1px solid var(--line);
   }
   #btn-freeze.on { background: #123024; border-color: #1f6d4d; color: var(--accent); }
-  .mode-toggle { display: flex; align-items: center; gap: 7px; cursor: pointer; font-size: 12px; }
-  .mode-toggle input { accent-color: var(--accent-2); }
-  .mode-toggle.hidden { display: none; }
   .note-box { margin-top: 12px; }
   .note-box textarea {
     width: 100%; resize: vertical; margin-top: 6px;
@@ -199,7 +196,7 @@
     background: var(--panel-2); border: 1px solid var(--line);
     border-radius: 6px; padding: 7px 9px;
   }
-  .note-box textarea:focus { outline: none; border-color: var(--accent-2); }
+  .note-box textarea:focus { outline: none; border-color: var(--accent-line); }
   .note-box textarea::placeholder { color: var(--dim); }
   #presets {
     display: grid; grid-template-columns: repeat(auto-fill, minmax(148px, 1fr)); gap: 6px;
@@ -431,7 +428,7 @@ Shortcuts are ignored while a slider or text box has focus.">? keys</span>
 
     <section data-panel="transport">
       <h2 tabindex="0" data-tip-title="Looper and Freeze"
-          data-tip="Both of these sit after the pedalboard rather than inside it, so they run on every preset.&#10;&#10;They are shown one at a time because the footswitch can only drive one at a time: with a single switch wired, the stomp does whichever is selected here. Choosing it in the browser rather than with a gesture on the switch is what keeps the press edge instant — a double-tap or long-press would delay the looper's boundary by the length of the gesture."><span class="grip" data-tip-title="Drag to reorder" data-tip="Drag this panel to a new position in the column. The order is remembered in this browser." aria-hidden="true">&#8681;</span>
+          data-tip="Both of these sit after the pedalboard rather than inside it, so they run on every preset.&#10;&#10;They are shown one at a time because the footswitch can only drive one at a time: with a single switch wired, the stomp does whichever is selected here. Choosing it in the browser rather than with a gesture on the switch is what keeps the press edge instant — a double-tap or long-press would delay the looper's boundary by the length of the gesture."><span class="grip" data-tip-title="Drag to reorder" data-tip="Drag this panel to a new position in the column. The order is remembered in this browser." aria-hidden="true">⁙</span>
         Looper / Freeze <span class="i" aria-hidden="true">i</span>
       </h2>
 
@@ -458,7 +455,7 @@ Shortcuts are ignored while a slider or text box has focus.">? keys</span>
       <div id="pane-freeze" hidden>
         <div class="row">
           <button class="big" id="btn-freeze" data-tip-title="Freeze"
-                  data-tip="Grabs the last fraction of a second and loops it as a drone while you keep playing over it.&#10;&#10;Unlike the looper, freeze takes whatever happened to be in the buffer the instant you hit it — you use it to turn a chord you just played into a pad, not to build an arrangement. (f)">Freeze</button>
+                  data-tip="Holds the harmonic content of what you just played as a sustained pad while you keep playing over it.&#10;&#10;Unlike the looper, freeze takes whatever happened to be in the buffer the instant you hit it — you use it to turn a chord you just played into a pad, not to build an arrangement. (f)">Freeze</button>
         </div>
         <p class="hint">
           With Freeze selected, the footswitch is momentary or latching depending on how you use it:
@@ -466,8 +463,9 @@ Shortcuts are ignored while a slider or text box has focus.">? keys</span>
           Capture always fires on the press, so the drone starts under your foot.
         </p>
         <p class="hint muted">
-          Sounds choppy? It loops a slice of audio, so a short grain repeats audibly.
-          Push <b>Grain ms</b> up and set <b>Hold</b> to 1.0 in the Parameters panel.
+          Holds the <i>spectrum</i> of what you played, not a slice of it, so nothing repeats.
+          <b>Shimmer</b> sets how much the phase is randomised each frame: 0 continues the chord
+          faithfully and can sound static, 1 is airier. <b>Hold</b> at 1.0 sustains forever.
         </p>
       </div>
     </section>
@@ -521,7 +519,7 @@ Shortcuts are ignored while a slider or text box has focus.">? keys</span>
 
     <section data-panel="loops">
       <h2 tabindex="0" data-tip-title="Saved loops"
-          data-tip="Loops written to disk as mono 16-bit WAV under ~/.config/guitar-pedal-cpp/loops.&#10;&#10;WAV rather than a private format so a loop is worth something outside this program — it opens in any DAW or player.&#10;&#10;Loading swaps the loop in on the audio thread as a pointer exchange, so it costs nothing and cannot miss a deadline. A loop recorded at a different sample rate is refused rather than played back at the wrong pitch."><span class="grip" data-tip-title="Drag to reorder" data-tip="Drag this panel to a new position in the column. The order is remembered in this browser." aria-hidden="true">&#8681;</span>
+          data-tip="Loops written to disk as mono 16-bit WAV under ~/.config/guitar-pedal-cpp/loops.&#10;&#10;WAV rather than a private format so a loop is worth something outside this program — it opens in any DAW or player.&#10;&#10;Loading swaps the loop in on the audio thread as a pointer exchange, so it costs nothing and cannot miss a deadline. A loop recorded at a different sample rate is refused rather than played back at the wrong pitch."><span class="grip" data-tip-title="Drag to reorder" data-tip="Drag this panel to a new position in the column. The order is remembered in this browser." aria-hidden="true">⁙</span>
         Saved loops <span class="i" aria-hidden="true">i</span>
         <span class="spacer"></span>
         <button class="tiny" id="btn-loops-refresh">refresh</button>

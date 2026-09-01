@@ -321,7 +321,7 @@ void test_env_filter_opens_with_level() {
 void test_freeze_holds_after_input_stops() {
     const float sr = 48000.0f;
     Freeze f(sr);
-    f.set_grain_ms(50.0f);
+    f.set_shimmer(0.0f);  // coherent, so the pad is a faithful continuation
     f.set_level(1.0f);
     f.set_decay(1.0f);
 
@@ -345,6 +345,48 @@ void test_freeze_holds_after_input_stops() {
     f.process(buf.data(), buf.size());
     check(local_peak(buf) < 1e-6f, "Freeze: release silences the pad");
     check(!f.frozen(), "Freeze: reports itself as released");
+}
+
+
+void test_freeze_is_spectral_not_a_repeating_grain() {
+    // The bug this replaced: a grain looper repeats its slice, so the output
+    // envelope has a period. A spectral hold has no period -- it is regenerated,
+    // not replayed. Feed a chord, freeze, then run a long stretch of silence and
+    // check the output does not restate the same envelope over and over.
+    const float sr = 48000.0f;
+    Freeze f(sr);
+    f.set_level(1.0f);
+    f.set_decay(1.0f);
+    f.set_shimmer(0.9f);
+
+    std::vector<float> buf(Freeze::kFftSize);
+    for (std::size_t i = 0; i < buf.size(); ++i) {
+        const float t = static_cast<float>(i) / sr;
+        buf[i] = 0.4f * (std::sin(2.0f * 3.14159265f * 220.0f * t) +
+                         std::sin(2.0f * 3.14159265f * 277.2f * t));
+    }
+    f.process(buf.data(), buf.size());
+    f.capture();
+
+    // Collect a few seconds of pad, in blocks, measuring each block's RMS.
+    std::vector<float> rms;
+    for (int block = 0; block < 60; ++block) {
+        std::vector<float> silence(2048, 0.0f);
+        f.process(silence.data(), silence.size());
+        double sum = 0.0;
+        for (const float v : silence) sum += static_cast<double>(v) * v;
+        rms.push_back(static_cast<float>(std::sqrt(sum / silence.size())));
+    }
+
+    // Skip the first blocks: overlap-add takes a few frames to reach steady state.
+    const std::vector<float> tail(rms.begin() + 8, rms.end());
+    float lo = tail[0], hi = tail[0];
+    for (const float v : tail) { lo = std::min(lo, v); hi = std::max(hi, v); }
+    check(lo > 0.01f, "Freeze: the pad sustains rather than dying away");
+    // A looped grain swings between the attack and the gap; a spectral hold is
+    // steady. 2x is loose enough not to be brittle and tight enough to fail the
+    // old implementation, whose envelope restated every grain.
+    check(hi < lo * 2.0f, "Freeze: the pad is steady, with no repeating envelope");
 }
 
 void test_every_preset_has_a_measured_trim() {
@@ -1263,6 +1305,7 @@ int main() {
     test_wave_folder_folds_rather_than_clips();
     test_env_filter_opens_with_level();
     test_freeze_holds_after_input_stops();
+    test_freeze_is_spectral_not_a_repeating_grain();
     test_every_preset_has_a_measured_trim();
     test_click_detector_single_and_double();
     test_looper_level_scales_playback_not_storage();

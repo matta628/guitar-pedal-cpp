@@ -771,9 +771,9 @@ int main(int argc, char** argv) {
                           [&](float v) {
                               chain.output_level.store(v, std::memory_order_relaxed);
                           }});
-        params.push_back({"freeze.grain", "Freeze", "Grain ms", 40.0f, 1500.0f,
-                          [&] { return chain.freeze.grain_ms(); },
-                          [&](float v) { chain.freeze.set_grain_ms(v); }});
+        params.push_back({"freeze.shimmer", "Freeze", "Shimmer", 0.0f, 1.0f,
+                          [&] { return chain.freeze.shimmer(); },
+                          [&](float v) { chain.freeze.set_shimmer(v); }});
         params.push_back({"freeze.level", "Freeze", "Pad level", 0.0f, 2.0f,
                           [&] { return chain.freeze.level(); },
                           [&](float v) { chain.freeze.set_level(v); }});

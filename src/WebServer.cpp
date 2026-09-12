@@ -538,6 +538,13 @@ void WebServer::route(Connection& c, const std::string& method, const std::strin
             callbacks_.looper_clear();
         } else if (action == "clean" && callbacks_.set_clean_loop) {
             callbacks_.set_clean_loop(query_get(query, "value") == "1");
+        } else if (action == "pause" && callbacks_.looper_pause) {
+            callbacks_.looper_pause(query_get(query, "value") == "1");
+        } else if (action == "seek" && callbacks_.looper_seek) {
+            const std::string frame = query_get(query, "frame");
+            if (!frame.empty()) {
+                callbacks_.looper_seek(std::strtoull(frame.c_str(), nullptr, 10));
+            }
         }
         c.out_buf += http_response("200 OK", "application/json", "{\"ok\":true}");
         c.close_when_drained = true;
@@ -646,6 +653,7 @@ std::string WebServer::state_json(bool full_log) {
     j += ",\"frozen\":" + std::string(d.frozen ? "true" : "false");
     j += ",\"freeze_mode\":" + std::string(d.freeze_mode ? "true" : "false");
     j += ",\"clean_loop\":" + std::string(d.clean_loop ? "true" : "false");
+    j += ",\"loop_paused\":" + std::string(d.loop_paused ? "true" : "false");
     j += ",\"setlist\":[";
     for (std::size_t i = 0; i < d.setlist.size(); ++i) {
         if (i) j += ",";

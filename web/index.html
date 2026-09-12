@@ -293,6 +293,8 @@
     border-radius: 4px; position: relative; overflow: hidden; margin: 11px 0 5px;
   }
   .loop-bar .fill { position: absolute; inset: 0 auto 0 0; background: var(--accent-dark); }
+  .loop-bar.seekable { cursor: pointer; }
+  .loop-bar.seekable:hover { outline: 1px solid var(--accent-line); }
   .loop-bar .head { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--accent); box-shadow: 0 0 6px rgba(110,231,183,.7); }
   .state-badge {
     display: inline-block; padding: 7px 15px; border-radius: 7px; font-size: 15px; font-weight: 650;
@@ -302,6 +304,7 @@
   .state-EMPTY { color: var(--dim); }
   .state-REC { color: var(--bad); border-color: #5b2626; background: #2c1414; }
   .state-PLAY { color: var(--accent); border-color: var(--accent-line); background: var(--accent-dark); }
+  .state-PAUSED { color: var(--dim); border-color: #3a3a3a; background: #1e1e1e; }
   .state-OVERDUB { color: var(--warn); border-color: #574718; background: #2b2411; }
 
   /* --------------------------------------------------------- parameters */
@@ -438,10 +441,12 @@ Shortcuts are ignored while a slider or text box has focus.">? keys</span>
       </div>
       <div id="pane-looper">
         <span id="loop-state" class="state-badge state-EMPTY">EMPTY</span>
-        <div class="loop-bar"><div class="fill" id="loop-fill"></div><div class="head" id="loop-head"></div></div>
+        <div class="loop-bar" id="loop-bar" data-tip-title="Loop position"
+             data-tip="Click anywhere to jump playback to that point. The jump lands at the top of the next audio block, not mid-buffer."><div class="fill" id="loop-fill"></div><div class="head" id="loop-head"></div></div>
         <div class="scale"><span id="loop-pos">0.00 s</span><span id="loop-len">no loop</span></div>
         <div class="row" style="margin-top:11px">
           <button class="big" id="btn-trigger">Trigger</button>
+          <button class="big" id="btn-pause">Pause</button>
           <button class="big" id="btn-clear">Clear</button>
           <button id="btn-loop-save" data-tip-title="Save this loop"
                   data-tip="Writes the loop to disk as a mono 16-bit WAV under ~/.config/guitar-pedal-cpp/loops.&#10;&#10;Only works from PLAYING or EMPTY: while recording or overdubbing the audio thread is writing the buffer, and copying it out from under a writer would give you a torn loop.">Save…</button>
@@ -902,6 +907,8 @@ let dragging = null;      // param id the user is currently holding
 const seenLog = new Set();
 let sim = false;
 let cleanLoop = false;
+let loopPaused = false;
+let loopFrames = 0;
 let curPreset = 0;
 let activeOnly = false;
 
@@ -1353,11 +1360,23 @@ function render(s) {
           ". Next stomp goes to slot " + (nextSlot(s.setlist_cursor, 1) + 1) + "."
         : "Not stepped yet — the next stomp goes to slot " + (nextSlot(-1, 1) + 1) + ".");
 
+  loopPaused = !!s.loop_paused;
+  // PAUSED is a display state, not one of the looper's own: the machine is
+  // still in Playing or Overdubbing, it just isn't advancing.
+  const shown = (loopPaused && (s.looper === "PLAY" || s.looper === "OVERDUB"))
+      ? "PAUSED" : s.looper;
   const badge = $("loop-state");
-  badge.textContent = s.looper;
-  badge.className = "state-badge state-" + s.looper;
+  badge.textContent = shown;
+  badge.className = "state-badge state-" + shown;
+
+  const pauseBtn = $("btn-pause");
+  pauseBtn.classList.toggle("on", loopPaused);
+  pauseBtn.textContent = loopPaused ? "Resume" : "Pause";
+  pauseBtn.disabled = s.loop_frames === 0;
+  $("loop-bar").classList.toggle("seekable", s.loop_frames > 0);
 
   const sr = (cfg && cfg.sample_rate) || 48000;
+  loopFrames = s.loop_frames;
   const lenSec = s.loop_frames / sr;
   const frac = s.loop_frames > 0 ? s.loop_position / s.loop_frames : 0;
   $("loop-fill").style.width = (s.loop_frames > 0 ? 100 : 0) + "%";
@@ -1521,6 +1540,19 @@ async function pollScope() {
 /* ------------------------------------------------------------- wiring -- */
 $("btn-trigger").onclick = () => post("/api/looper", { action: "trigger" });
 $("btn-clear").onclick = () => post("/api/looper", { action: "clear" });
+$("btn-pause").onclick =
+    () => post("/api/looper", { action: "pause", value: loopPaused ? "0" : "1" });
+
+// Click anywhere on the bar to jump there. The fraction is turned into a frame
+// here rather than sent as a fraction, so the pedal is never asked to guess
+// what the browser thought the loop length was.
+$("loop-bar").onclick = (e) => {
+  if (loopFrames <= 0) return;
+  const r = e.currentTarget.getBoundingClientRect();
+  if (r.width <= 0) return;
+  const frac = Math.min(1, Math.max(0, (e.clientX - r.left) / r.width));
+  post("/api/looper", { action: "seek", frame: String(Math.floor(frac * loopFrames)) });
+};
 $("btn-reset").onclick = () => post("/api/reset");
 $("btn-sim").onclick = () => post("/api/sim", { on: sim ? "0" : "1" });
 $("btn-clean-loop").onclick =

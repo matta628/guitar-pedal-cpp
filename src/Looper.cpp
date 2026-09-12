@@ -33,6 +33,14 @@ void Looper::set_overdub_decay(float decay) {
     overdub_decay_.store(std::clamp(decay, 0.0f, 1.0f), std::memory_order_relaxed);
 }
 
+void Looper::set_paused(bool paused) {
+    paused_.store(paused, std::memory_order_relaxed);
+}
+
+void Looper::seek(std::size_t frame) {
+    seek_pending_.store(static_cast<long long>(frame), std::memory_order_relaxed);
+}
+
 void Looper::set_level(float level) {
     level_.store(level < 0.0f ? 0.0f : level, std::memory_order_relaxed);
 }
@@ -47,6 +55,9 @@ void Looper::process(float* buffer, std::size_t n_frames) {
         read_index_ = 0;
         state_ = State::Playing;
         trigger_pending_.store(false, std::memory_order_relaxed);
+        // Loading a loop is a request to hear it, so it lifts a pause rather
+        // than dropping a loaded loop into silence with no visible cause.
+        paused_.store(false, std::memory_order_relaxed);
         load_pending_.store(false, std::memory_order_release);
     }
 
@@ -56,6 +67,10 @@ void Looper::process(float* buffer, std::size_t n_frames) {
         loop_length_ = 0;
         state_ = State::Empty;
         trigger_pending_.store(false, std::memory_order_relaxed);
+        // Same reasoning: starting over should not leave a pause armed to
+        // silence the next take's playback.
+        paused_.store(false, std::memory_order_relaxed);
+        seek_pending_.store(-1, std::memory_order_relaxed);
     } else if (trigger_pending_.exchange(false, std::memory_order_relaxed)) {
         switch (state_) {
             case State::Empty:
@@ -76,8 +91,20 @@ void Looper::process(float* buffer, std::size_t n_frames) {
         }
     }
 
+    // After the transitions above, so a seek queued in the same block as a
+    // clear does not resurrect a read position into a loop that no longer
+    // exists, and a seek alongside a load lands in the newly loaded material.
+    const long long requested = seek_pending_.exchange(-1, std::memory_order_relaxed);
+    if (requested >= 0 && loop_length_ > 0) {
+        read_index_ = static_cast<std::size_t>(requested) % loop_length_;
+    }
+
     const float decay = overdub_decay_.load(std::memory_order_relaxed);
     const float level = level_.load(std::memory_order_relaxed);
+    // Read once per buffer, not per sample: the flag cannot change mid-buffer
+    // in any way the ear could resolve, and a pause that lands on a buffer
+    // boundary is what every other control here does too.
+    const bool paused = paused_.load(std::memory_order_relaxed);
 
     for (std::size_t i = 0; i < n_frames; ++i) {
         if (state_ == State::Recording) {
@@ -89,6 +116,10 @@ void Looper::process(float* buffer, std::size_t n_frames) {
                 read_index_ = 0;
                 state_ = State::Playing;
             }
+        } else if (paused) {
+            // Nothing mixed in and read_index_ left alone, so resuming picks up
+            // exactly where it stopped. The live signal in `buffer` passes
+            // through untouched -- pausing the loop must not mute the guitar.
         } else if (state_ == State::Playing && loop_length_ > 0) {
             buffer[i] += buffer_[read_index_] * level;
             read_index_ = (read_index_ + 1) % loop_length_;

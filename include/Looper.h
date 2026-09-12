@@ -29,6 +29,21 @@ public:
 
     void set_overdub_decay(float decay);
 
+    // Holds playback where it is without touching the recording. Safe from any
+    // thread. Deliberately NOT part of the on_trigger() cycle: the footswitch
+    // means "record/play/overdub" and a pause folded into it would cost a
+    // press to get past. Pausing gates playback and overdub only -- an active
+    // Recording keeps recording, because stopping that is what the trigger is
+    // for and silently doing it here would lose the take's end.
+    void set_paused(bool paused);
+    bool paused() const { return paused_.load(std::memory_order_relaxed); }
+
+    // Jump playback to `frame`. Applied at the top of the next process() call
+    // on the audio thread, like every other control here, and clamped against
+    // the loop length there rather than by the caller -- the caller cannot see
+    // loop_length_ without racing the audio thread for it.
+    void seek(std::size_t frame);
+
     // Playback level for the recorded loop, 0 = silent, 1 = unity. Applies to
     // what you HEAR, never to what is stored: turning it down while
     // overdubbing must not quietly erase the loop.
@@ -91,6 +106,10 @@ private:
 
     std::atomic<bool> trigger_pending_{false};
     std::atomic<bool> clear_pending_{false};
+    std::atomic<bool> paused_{false};
+    // -1 is "nothing requested". A separate flag plus a value would need the
+    // two read atomically together; one signed slot carries both.
+    std::atomic<long long> seek_pending_{-1};
     std::atomic<float> overdub_decay_{0.98f};
     std::atomic<float> level_{1.0f};
 };

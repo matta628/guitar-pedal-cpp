@@ -959,6 +959,13 @@ int main(int argc, char** argv) {
             chain.clear_count.fetch_add(1, std::memory_order_relaxed);
             if (web) web->log("web: loop cleared");
         };
+        cb.looper_pause = [&](bool on) {
+            chain.looper.set_paused(on);
+            if (web) web->log(on ? "web: loop paused" : "web: loop resumed");
+        };
+        cb.looper_seek = [&](std::uint64_t frame) {
+            chain.looper.seek(static_cast<std::size_t>(frame));
+        };
         cb.set_clean_loop = [&](bool on) {
             chain.clean_loop.store(on, std::memory_order_relaxed);
             if (web) web->log(on ? "web: looper records dry, effects on playback"
@@ -1028,6 +1035,7 @@ int main(int argc, char** argv) {
             d.frozen = chain.freeze.frozen();
             d.freeze_mode = chain.mode.load(std::memory_order_relaxed) == ControlMode::Freeze;
             d.clean_loop = chain.clean_loop.load(std::memory_order_relaxed);
+            d.loop_paused = chain.looper.paused();
             d.setlist = chain.setlist.presets();
             d.setlist_cursor = chain.setlist.cursor();
             d.have_looper_switch = have_looper_switch;

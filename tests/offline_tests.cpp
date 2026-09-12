@@ -1373,6 +1373,90 @@ void test_loop_store_duplicates_without_losing_a_take() {
     std::filesystem::remove_all(dir);
 }
 
+void test_looper_pause_holds_position_without_touching_the_recording() {
+    Looper looper(48000.0f, 1.0f);
+    std::vector<float> rec(8);
+    for (std::size_t i = 0; i < rec.size(); ++i) rec[i] = static_cast<float>(i + 1);
+
+    looper.on_trigger();                       // -> Recording
+    std::vector<float> buf = rec;
+    looper.process(buf.data(), buf.size());
+    looper.on_trigger();                       // -> Playing
+
+    // Two frames of playback, so the read head is partway in.
+    std::vector<float> play(2, 0.0f);
+    looper.process(play.data(), play.size());
+    check(approx(play[0], 1.0f, 1e-6f) && approx(play[1], 2.0f, 1e-6f),
+          "Looper pause: plays back from the start before pausing");
+    const std::size_t held = looper.position();
+
+    looper.set_paused(true);
+    std::vector<float> silent(4, 0.0f);
+    looper.process(silent.data(), silent.size());
+    bool all_silent = true;
+    for (float v : silent) if (v != 0.0f) all_silent = false;
+    check(all_silent, "Looper pause: mixes nothing in while paused");
+    check(looper.position() == held, "Looper pause: the read position does not advance");
+
+    // The live signal must still get through -- pausing the loop is not a mute.
+    std::vector<float> live(4, 0.25f);
+    looper.process(live.data(), live.size());
+    bool passed_through = true;
+    for (float v : live) if (!approx(v, 0.25f, 1e-6f)) passed_through = false;
+    check(passed_through, "Looper pause: the live signal passes through untouched");
+
+    looper.set_paused(false);
+    std::vector<float> resumed(2, 0.0f);
+    looper.process(resumed.data(), resumed.size());
+    check(approx(resumed[0], 3.0f, 1e-6f) && approx(resumed[1], 4.0f, 1e-6f),
+          "Looper pause: resuming continues from where it stopped");
+
+    // Clearing must not leave a pause armed against the next take.
+    looper.set_paused(true);
+    looper.clear();
+    looper.process(silent.data(), 1);
+    check(!looper.paused(), "Looper pause: clear() lifts the pause");
+}
+
+void test_looper_seek_jumps_playback() {
+    Looper looper(48000.0f, 1.0f);
+    std::vector<float> rec(8);
+    for (std::size_t i = 0; i < rec.size(); ++i) rec[i] = static_cast<float>(i + 1);
+
+    looper.on_trigger();
+    std::vector<float> buf = rec;
+    looper.process(buf.data(), buf.size());
+    looper.on_trigger();                       // -> Playing, length 8
+
+    looper.seek(5);
+    std::vector<float> out(2, 0.0f);
+    looper.process(out.data(), out.size());
+    check(approx(out[0], 6.0f, 1e-6f) && approx(out[1], 7.0f, 1e-6f),
+          "Looper seek: playback resumes from the requested frame");
+
+    // Past the end wraps rather than reading out of bounds or clamping to the
+    // last sample, which would stick the head at the end of the loop.
+    looper.seek(11);                           // 11 % 8 == 3
+    std::vector<float> wrapped(1, 0.0f);
+    looper.process(wrapped.data(), wrapped.size());
+    check(approx(wrapped[0], 4.0f, 1e-6f), "Looper seek: a frame past the end wraps");
+
+    // Seeking while paused should move the head but play nothing.
+    looper.set_paused(true);
+    looper.seek(0);
+    std::vector<float> quiet(1, 0.0f);
+    looper.process(quiet.data(), quiet.size());
+    check(quiet[0] == 0.0f, "Looper seek: seeking while paused stays silent");
+    check(looper.position() == 0, "Looper seek: the position still moves while paused");
+
+    // A seek on an empty looper must not divide by a zero length.
+    Looper empty(48000.0f, 1.0f);
+    empty.seek(100);
+    std::vector<float> nothing(4, 0.0f);
+    empty.process(nothing.data(), nothing.size());
+    check(empty.position() == 0, "Looper seek: a seek with no loop recorded is ignored");
+}
+
 }  // namespace
 
 
@@ -1464,6 +1548,8 @@ int main() {
     test_loop_store_duplicates_without_losing_a_take();
     test_looper_loads_a_saved_loop_without_allocating();
     test_looper_overdub_layers_and_decays();
+    test_looper_pause_holds_position_without_touching_the_recording();
+    test_looper_seek_jumps_playback();
     test_wave_folder_folds_rather_than_clips();
     test_env_filter_opens_with_level();
     test_freeze_holds_after_input_stops();

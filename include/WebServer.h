@@ -114,6 +114,9 @@ public:
         std::function<std::string(std::string)> loop_save;   // "" on success, else the reason
         std::function<std::string(std::string)> loop_load;
         std::function<std::string(std::string)> loop_delete;
+        // from, to -> "" on success, else the reason. `to` may be empty for an
+        // auto-derived name.
+        std::function<std::string(std::string, std::string)> loop_duplicate;
 
         std::function<void()> save_preset;
         std::function<void()> reset_preset;

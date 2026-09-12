@@ -519,6 +519,8 @@ void WebServer::route(Connection& c, const std::string& method, const std::strin
             err = callbacks_.loop_load(name);
         } else if (action == "delete" && callbacks_.loop_delete) {
             err = callbacks_.loop_delete(name);
+        } else if (action == "duplicate" && callbacks_.loop_duplicate) {
+            err = callbacks_.loop_duplicate(name, query_get(query, "to"));
         }
         const bool ok = err.empty();
         c.out_buf += http_response(ok ? "200 OK" : "400 Bad Request", "application/json",

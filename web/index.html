@@ -1588,9 +1588,11 @@ $("seg-freeze").onclick = () => post("/api/freeze", { action: "mode", value: 1 }
 // These POSTs need their reply, unlike post(), because saving is the one action
 // here that routinely fails for a reason the player has to hear: nothing
 // recorded, a name with nothing usable in it, a rate mismatch, a full disk.
-async function loopAction(action, name) {
+async function loopAction(action, name, to) {
   try {
-    const q = new URLSearchParams({ action, name }).toString();
+    const params = { action, name };
+    if (to !== undefined) params.to = to;
+    const q = new URLSearchParams(params).toString();
     const r = await fetch("/api/loops?" + q, { method: "POST" });
     const d = await r.json().catch(() => ({}));
     if (!d.ok && d.error) window.alert(d.error);
@@ -1629,6 +1631,18 @@ async function refreshLoops() {
     load.textContent = "load";
     load.onclick = () => loopAction("load", l.name);
 
+    // Fork a take before overdubbing onto it: the copy is what gets layered,
+    // and the original stays on disk exactly as it was played.
+    const dup = document.createElement("button");
+    dup.className = "tiny";
+    dup.textContent = "duplicate";
+    dup.title = "Copy this loop under a new name, then overdub onto the copy";
+    dup.onclick = () => {
+      const to = window.prompt("Name for the copy", l.name + " copy");
+      if (to === null) return;
+      loopAction("duplicate", l.name, to.trim());
+    };
+
     const del = document.createElement("button");
     del.className = "tiny";
     del.textContent = "delete";
@@ -1638,7 +1652,7 @@ async function refreshLoops() {
       }
     };
 
-    row.append(nm, dur, load, del);
+    row.append(nm, dur, load, dup, del);
     list.appendChild(row);
   }
 }

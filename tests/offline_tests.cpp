@@ -1319,6 +1319,60 @@ void test_clean_loop_records_dry_and_effects_on_playback() {
           "clean loop: the same stored loop sounds different under a different preset");
 }
 
+void test_loop_store_duplicates_without_losing_a_take() {
+    const std::filesystem::path dir =
+        std::filesystem::temp_directory_path() / "guitar-pedal-dup-test";
+    std::filesystem::remove_all(dir);
+    LoopStore store(dir.string());
+
+    std::vector<float> samples;
+    for (int i = 0; i < 480; ++i) {
+        samples.push_back(std::sin(static_cast<float>(i) * 0.05f) * 0.8f);
+    }
+    std::string err;
+    check(store.save("solo", samples, 48000, &err), "LoopStore dup: the original saves");
+
+    std::string made;
+    check(store.duplicate("solo", "", &made, &err), "LoopStore dup: duplicate with no name given");
+    check(made == "solo copy", "LoopStore dup: derives 'solo copy'");
+
+    // The copy has to be the same audio, or forking a take is a lie. Compared
+    // against what the *original file* reads back as, not against the floats
+    // that went in: the WAV is 16-bit, so saving already quantised them, and
+    // holding the copy to the pre-save values would be testing the encoder.
+    std::vector<float> original, copied;
+    unsigned int orig_rate = 0, rate = 0;
+    check(store.load("solo", &original, &orig_rate, &err), "LoopStore dup: the original loads");
+    check(store.load("solo copy", &copied, &rate, &err), "LoopStore dup: the copy loads");
+    bool identical = copied.size() == original.size() && rate == orig_rate;
+    for (std::size_t i = 0; i < copied.size() && identical; ++i) {
+        if (copied[i] != original[i]) identical = false;
+    }
+    check(identical, "LoopStore dup: the copy is sample-for-sample the original");
+
+    // Duplicating again must not stop at the second copy.
+    check(store.duplicate("solo", "", &made, &err) && made == "solo copy 2",
+          "LoopStore dup: a second duplicate becomes 'solo copy 2'");
+
+    // The whole point is not losing a take, so an occupied name is refused.
+    check(!store.duplicate("solo", "solo copy", &made, &err),
+          "LoopStore dup: refuses to overwrite an existing loop");
+    std::vector<float> still_there;
+    check(store.load("solo copy", &still_there, &rate, &err) && still_there.size() == samples.size(),
+          "LoopStore dup: the refused destination is left intact");
+
+    check(!store.duplicate("solo", "solo", &made, &err),
+          "LoopStore dup: refuses to duplicate a loop onto itself");
+    check(!store.duplicate("no such take", "", &made, &err),
+          "LoopStore dup: refuses a source that does not exist");
+
+    // Names go through the same filter as everything else that becomes a path.
+    check(store.duplicate("solo", "../../escape", &made, &err) && made == "escape",
+          "LoopStore dup: the destination name is sanitised");
+
+    std::filesystem::remove_all(dir);
+}
+
 }  // namespace
 
 
@@ -1407,6 +1461,7 @@ int main() {
     test_looper_record_and_play_back();
     test_loop_store_sanitises_names();
     test_loop_store_round_trips_a_loop();
+    test_loop_store_duplicates_without_losing_a_take();
     test_looper_loads_a_saved_loop_without_allocating();
     test_looper_overdub_layers_and_decays();
     test_wave_folder_folds_rather_than_clips();

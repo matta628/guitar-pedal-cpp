@@ -37,6 +37,19 @@ public:
               std::string* error);
     bool remove(const std::string& name, std::string* error);
 
+    // Copies a saved loop under a new name, so a take can be forked and
+    // overdubbed onto without putting the original at risk. A byte copy rather
+    // than a load/save round trip: the samples are already in the exact form
+    // they will be read back in, and decoding to float and re-quantising to
+    // 16-bit only invites rounding to change them.
+    //
+    // `to` may be empty, in which case a free name is derived from `from`
+    // ("solo" -> "solo copy" -> "solo copy 2"). An existing destination is
+    // never overwritten -- the whole point is not losing a take. On success
+    // the name actually used is written to `made`.
+    bool duplicate(const std::string& from, const std::string& to, std::string* made,
+                   std::string* error);
+
     const std::string& dir() const { return dir_; }
 
     // A loop name arrives from a browser, and it is about to become a path.

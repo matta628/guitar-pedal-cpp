@@ -903,6 +903,14 @@ int main(int argc, char** argv) {
             return "";
         };
 
+        cb.loop_duplicate = [&](std::string from, std::string to) -> std::string {
+            std::string made;
+            std::string err;
+            if (!loop_store.duplicate(from, to, &made, &err)) return err;
+            if (web) web->log("loop duplicated: " + LoopStore::sanitise(from) + " -> " + made);
+            return "";
+        };
+
         cb.loop_delete = [&](std::string name) -> std::string {
             std::string err;
             if (!loop_store.remove(name, &err)) return err;

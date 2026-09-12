@@ -209,6 +209,57 @@ bool LoopStore::load(const std::string& name, std::vector<float>* out, unsigned 
     return true;
 }
 
+bool LoopStore::duplicate(const std::string& from, const std::string& to, std::string* made,
+                          std::string* error) {
+    const std::string src = sanitise(from);
+    if (src.empty()) {
+        if (error) *error = "no such loop";
+        return false;
+    }
+    std::error_code ec;
+    if (!fs::exists(path_for(src), ec)) {
+        if (error) *error = "no loop called '" + src + "'";
+        return false;
+    }
+
+    std::string dst = sanitise(to);
+    if (dst.empty()) {
+        // " copy", then " copy 2", " copy 3"... The first free one wins, so
+        // duplicating the same take repeatedly does not stop at the second.
+        const std::string base = src + " copy";
+        if (!fs::exists(path_for(base), ec)) {
+            dst = base;
+        } else {
+            for (int n = 2; n < 1000 && dst.empty(); ++n) {
+                const std::string candidate = base + " " + std::to_string(n);
+                if (!fs::exists(path_for(candidate), ec)) dst = candidate;
+            }
+        }
+        if (dst.empty()) {
+            if (error) *error = "too many copies of '" + src + "'";
+            return false;
+        }
+    } else if (fs::exists(path_for(dst), ec)) {
+        // Refused rather than silently versioned: an explicit name is a
+        // request for that name, and overwriting it would destroy a take.
+        if (error) *error = "'" + dst + "' already exists";
+        return false;
+    }
+
+    if (dst == src) {
+        if (error) *error = "a loop cannot be duplicated onto itself";
+        return false;
+    }
+
+    fs::copy_file(path_for(src), path_for(dst), ec);
+    if (ec) {
+        if (error) *error = "could not copy '" + src + "' to '" + dst + "'";
+        return false;
+    }
+    if (made) *made = dst;
+    return true;
+}
+
 bool LoopStore::remove(const std::string& name, std::string* error) {
     const std::string safe = sanitise(name);
     if (safe.empty()) {

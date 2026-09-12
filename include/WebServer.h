@@ -73,6 +73,8 @@ public:
         bool have_utility_switch = false;
         bool frozen = false;
         bool freeze_mode = false;
+        // Looper is recording dry and the board is running on its playback.
+        bool clean_loop = false;
         // Preset indices the second footswitch walks, and the position within
         // that list -- not a preset index -- or -1 before the first step.
         std::vector<int> setlist;
@@ -98,6 +100,7 @@ public:
         std::function<void(int)> set_preset;
         std::function<void()> looper_trigger;
         std::function<void()> looper_clear;
+        std::function<void(bool)> set_clean_loop;
         std::function<void(bool)> set_simulator;
         std::function<void()> reset_stats;
         // Persist the current knob positions for the selected preset, drop

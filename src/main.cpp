@@ -77,6 +77,16 @@ struct PedalChain {
 
     std::atomic<ControlMode> mode{ControlMode::Looper};
 
+    // Where the looper sits in the chain. Normally it is last, so it records
+    // the finished tone. With this set it moves to the front instead: it
+    // records the dry input, and its playback is fed through the board like
+    // any other signal, so the effect you hear on a loop is whichever preset
+    // is selected *now* rather than whichever one was selected while playing.
+    // That makes one recording auditionable through every preset, which is
+    // what a demo wants and what a performance usually does not -- hence a
+    // switch rather than a new order for everyone.
+    std::atomic<bool> clean_loop{false};
+
     // Master output level, after every effect and after the looper. Distinct
     // from a preset's trim: the trim balances presets against each other and
     // is reloaded whenever one is selected, while this is a single global you
@@ -136,15 +146,32 @@ void run_block(PedalChain& chain, const float* in, float* out, unsigned int n_fr
         std::memset(mono, 0, n_frames * sizeof(float));
     }
 
-    chain.board.process(mono, n_frames);
+    if (chain.clean_loop.load(std::memory_order_relaxed)) {
+        // Looper first: what it stores is the untouched input, and what it
+        // plays back joins the live signal *before* the board, so both arrive
+        // at the effects together. Recording is unaffected by the preset, and
+        // changing preset re-colours the loop on the next block.
+        //
+        // Freeze necessarily lands after the looper here, so a frozen pad is
+        // no longer captured into the loop the way it is below. That is the
+        // cost of the reorder, not an oversight: freeze would have to run
+        // twice -- once into the recording, once over the playback -- to have
+        // it both ways, and it only has one state to be in.
+        chain.looper.process(mono, n_frames);
+        chain.board.process(mono, n_frames);
+        chain.freeze.process(mono, n_frames);
+    } else {
+        chain.board.process(mono, n_frames);
 
-    // Freeze before the looper so a captured drone is part of what the looper
-    // records -- hold a chord, loop over it, and the loop contains the pad.
-    chain.freeze.process(mono, n_frames);
+        // Freeze before the looper so a captured drone is part of what the
+        // looper records -- hold a chord, loop over it, and the loop contains
+        // the pad.
+        chain.freeze.process(mono, n_frames);
 
-    // After the pedalboard, not inside it: the looper records what you would
-    // hear, and keeps running even on the clean preset.
-    chain.looper.process(mono, n_frames);
+        // After the pedalboard, not inside it: the looper records what you
+        // would hear, and keeps running even on the clean preset.
+        chain.looper.process(mono, n_frames);
+    }
 
     const float out_level = chain.output_level.load(std::memory_order_relaxed);
     if (out_level != 1.0f) {
@@ -283,6 +310,7 @@ struct Options {
     bool web = true;
     bool lcd = true;
     bool simulate = false;
+    bool clean_loop = false;
     bool list = false;
     // How many footswitches are physically wired. The program cannot detect
     // this: a GPIO line requests successfully whether or not a switch is on
@@ -306,6 +334,8 @@ void print_usage() {
         "  --settings <path>       saved preset edits (default ~/.config/guitar-pedal-cpp/presets.conf)\n"
         "  --no-web                don't serve the web UI\n"
         "  --no-lcd                leave the LCD1602 alone; LEDs and switch still arm\n"
+        "  --clean-loop            record the loop dry and apply effects on playback, so\n"
+        "                          one recording can be heard through every preset\n"
         "  --simulate              start with the built-in signal generator on\n"
         "  --list                  list audio devices and exit\n";
 }
@@ -325,6 +355,7 @@ bool parse_args(int argc, char** argv, Options* opt) {
         else if (a == "--no-web") opt->web = false;
         else if (a == "--no-lcd") opt->lcd = false;
         else if (a == "--simulate") opt->simulate = true;
+        else if (a == "--clean-loop") opt->clean_loop = true;
         else if (a == "--list") opt->list = true;
         else if (a == "-h" || a == "--help") { print_usage(); return false; }
         else {
@@ -512,6 +543,7 @@ int main(int argc, char** argv) {
 
     // ------------------------------------------------------------- simulator
     std::atomic<bool> simulate{opt.simulate};
+    chain.clean_loop.store(opt.clean_loop, std::memory_order_relaxed);
     std::thread sim_thread;
     if (!audio_running) {
         chain.prepare(buffer_frames, 1);
@@ -919,6 +951,11 @@ int main(int argc, char** argv) {
             chain.clear_count.fetch_add(1, std::memory_order_relaxed);
             if (web) web->log("web: loop cleared");
         };
+        cb.set_clean_loop = [&](bool on) {
+            chain.clean_loop.store(on, std::memory_order_relaxed);
+            if (web) web->log(on ? "web: looper records dry, effects on playback"
+                                 : "web: looper records the finished tone");
+        };
         cb.set_simulator = [&](bool on) {
             if (audio_running) {
                 if (web) web->log("web: simulator ignored — the sound card owns the chain");
@@ -982,6 +1019,7 @@ int main(int argc, char** argv) {
             d.lcd1 = "FX:   " + spec.short_name;
             d.frozen = chain.freeze.frozen();
             d.freeze_mode = chain.mode.load(std::memory_order_relaxed) == ControlMode::Freeze;
+            d.clean_loop = chain.clean_loop.load(std::memory_order_relaxed);
             d.setlist = chain.setlist.presets();
             d.setlist_cursor = chain.setlist.cursor();
             d.have_looper_switch = have_looper_switch;

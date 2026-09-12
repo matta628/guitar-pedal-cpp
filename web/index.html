@@ -445,6 +445,8 @@ Shortcuts are ignored while a slider or text box has focus.">? keys</span>
           <button class="big" id="btn-clear">Clear</button>
           <button id="btn-loop-save" data-tip-title="Save this loop"
                   data-tip="Writes the loop to disk as a mono 16-bit WAV under ~/.config/guitar-pedal-cpp/loops.&#10;&#10;Only works from PLAYING or EMPTY: while recording or overdubbing the audio thread is writing the buffer, and copying it out from under a writer would give you a torn loop.">Save…</button>
+          <button id="btn-clean-loop" data-tip-title="Record dry, effect on playback"
+                  data-tip="Moves the looper to the front of the chain: it stores the untouched input, and its playback runs through the board with the live signal.&#10;&#10;One recording can then be heard through every preset — switch preset and the loop changes with it.&#10;&#10;Off, the looper sits last and records the finished tone, so a loop keeps the preset it was played with.&#10;&#10;Freeze is captured into the loop only when this is off.">Dry loop</button>
         </div>
         <p class="hint">
           Trigger drives the same state machine as the footswitch:
@@ -899,6 +901,7 @@ let scopePoints = 512;
 let dragging = null;      // param id the user is currently holding
 const seenLog = new Set();
 let sim = false;
+let cleanLoop = false;
 let curPreset = 0;
 let activeOnly = false;
 
@@ -1405,6 +1408,11 @@ function render(s) {
   au.textContent = s.audio_running ? "audio running" : ("audio stopped" + (s.audio_status ? ": " + s.audio_status : ""));
   au.className = "pill " + (s.audio_running ? "ok" : "warn");
 
+  cleanLoop = !!s.clean_loop;
+  const cleanBtn = $("btn-clean-loop");
+  cleanBtn.classList.toggle("on", cleanLoop);
+  cleanBtn.textContent = cleanLoop ? "Dry loop" : "Wet loop";
+
   sim = s.simulator;
   const simBtn = $("btn-sim");
   simBtn.classList.toggle("on", sim);
@@ -1515,6 +1523,8 @@ $("btn-trigger").onclick = () => post("/api/looper", { action: "trigger" });
 $("btn-clear").onclick = () => post("/api/looper", { action: "clear" });
 $("btn-reset").onclick = () => post("/api/reset");
 $("btn-sim").onclick = () => post("/api/sim", { on: sim ? "0" : "1" });
+$("btn-clean-loop").onclick =
+    () => post("/api/looper", { action: "clean", value: cleanLoop ? "0" : "1" });
 $("btn-save").onclick = () => post("/api/preset/save");
 $("btn-revert").onclick = () => post("/api/preset/reset");
 $("btn-revert-all").onclick = () => {

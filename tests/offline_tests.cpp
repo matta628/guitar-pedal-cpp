@@ -1212,6 +1212,113 @@ void test_pedalboard_ignores_a_settings_file_it_cannot_understand() {
     std::filesystem::remove(path);
 }
 
+// The chain can run the looper last (it records the finished tone) or first
+// (it records the dry input and its playback is fed through the board). These
+// mirror run_block()'s two orders in main.cpp; if that ordering changes, these
+// are what should fail.
+void record_a_loop(Pedalboard& board, Looper& looper, const std::vector<float>& input,
+                   bool clean_loop, std::vector<float>* stored) {
+    looper.clear();
+    std::vector<float> scratch(input.size());
+    // clear() is only a flag until the next process() call, so spend a block on it.
+    looper.process(scratch.data(), scratch.size());
+
+    looper.on_trigger();                       // Empty -> Recording
+    scratch = input;
+    if (clean_loop) {
+        looper.process(scratch.data(), scratch.size());
+        board.process(scratch.data(), scratch.size());
+    } else {
+        board.process(scratch.data(), scratch.size());
+        looper.process(scratch.data(), scratch.size());
+    }
+    looper.on_trigger();                       // Recording -> Playing
+    std::vector<float> flush(input.size(), 0.0f);
+    looper.process(flush.data(), 1);           // let the transition land
+
+    looper.snapshot(stored);
+}
+
+void test_clean_loop_records_dry_and_effects_on_playback() {
+    std::vector<float> input(4096);
+    for (std::size_t i = 0; i < input.size(); ++i) {
+        input[i] = 0.5f * std::sin(2.0f * 3.14159265f * 220.0f * static_cast<float>(i) / 48000.0f);
+    }
+
+    int fuzz_index = -1;
+    {
+        Pedalboard probe(48000.0f);
+        for (int i = 0; i < probe.preset_count(); ++i) {
+            if (probe.presets()[static_cast<std::size_t>(i)].id == "fuzz") fuzz_index = i;
+        }
+    }
+    check(fuzz_index >= 0, "clean loop: the fuzz preset exists to test against");
+    if (fuzz_index < 0) return;
+
+    // What the board does to this input, for comparison.
+    std::vector<float> wet = input;
+    {
+        Pedalboard board(48000.0f);
+        board.select(fuzz_index);
+        board.process(wet.data(), wet.size());
+    }
+    const bool board_alters_it = [&] {
+        for (std::size_t i = 0; i < wet.size(); ++i) {
+            if (!approx(wet[i], input[i], 1e-4f)) return true;
+        }
+        return false;
+    }();
+    check(board_alters_it, "clean loop: the fuzz preset actually changes the signal");
+
+    std::vector<float> stored_clean, stored_wet;
+    {
+        Pedalboard board(48000.0f);
+        board.select(fuzz_index);
+        Looper looper(48000.0f, 1.0f);
+        record_a_loop(board, looper, input, true, &stored_clean);
+    }
+    {
+        Pedalboard board(48000.0f);
+        board.select(fuzz_index);
+        Looper looper(48000.0f, 1.0f);
+        record_a_loop(board, looper, input, false, &stored_wet);
+    }
+
+    check(stored_clean.size() == input.size() && stored_wet.size() == input.size(),
+          "clean loop: both orders record a loop of the expected length");
+
+    bool clean_is_dry = stored_clean.size() == input.size();
+    for (std::size_t i = 0; i < stored_clean.size() && clean_is_dry; ++i) {
+        if (!approx(stored_clean[i], input[i], 1e-6f)) clean_is_dry = false;
+    }
+    check(clean_is_dry, "clean loop: looper-first stores the dry input, untouched by the preset");
+
+    bool wet_is_the_board_output = stored_wet.size() == wet.size();
+    for (std::size_t i = 0; i < stored_wet.size() && wet_is_the_board_output; ++i) {
+        if (!approx(stored_wet[i], wet[i], 1e-6f)) wet_is_the_board_output = false;
+    }
+    check(wet_is_the_board_output, "clean loop: looper-last stores the processed tone instead");
+
+    // The payoff: with the loop stored dry, what you hear depends on the preset
+    // selected now, so one recording can be auditioned through the whole board.
+    auto play_through = [&](int preset) {
+        Pedalboard board(48000.0f);
+        board.select(preset);
+        Looper looper(48000.0f, 1.0f);
+        looper.load(stored_clean);
+        std::vector<float> out(input.size(), 0.0f);
+        looper.process(out.data(), out.size());   // picks the load up, then plays
+        board.process(out.data(), out.size());
+        double energy = 0.0;
+        for (float v : out) energy += static_cast<double>(v) * v;
+        return energy;
+    };
+    const double clean_energy = play_through(0);
+    const double fuzz_energy = play_through(fuzz_index);
+    check(clean_energy > 0.0 && std::fabs(fuzz_energy - clean_energy) > 1e-6 * clean_energy,
+          "clean loop: the same stored loop sounds different under a different preset");
+}
+
 }  // namespace
 
 
@@ -1343,6 +1450,7 @@ int main() {
     test_pedalboard_processes_every_preset_without_blowing_up();
     test_pedalboard_saves_and_resets_user_edits();
     test_pedalboard_ignores_a_settings_file_it_cannot_understand();
+    test_clean_loop_records_dry_and_effects_on_playback();
 
     if (g_failures > 0) {
         std::printf("\n%d test(s) failed\n", g_failures);
